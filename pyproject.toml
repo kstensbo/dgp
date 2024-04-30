@@ -3,22 +3,22 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dp"
+name = "dgp"
 version = "0.0.1"
-authors = [{name = "Kristoffer Stensbo-Smidt", email = "kss@prior.info"}]
-description = "Implementations of Dirichlet processes."
+authors = [{ name = "Kristoffer Stensbo-Smidt", email = "kss@prior.info" }]
+description = "Implementations of Gaussian processes for derivative observations."
 requires-python = ">=3.11"
 dynamic = ["dependencies", "optional-dependencies"]
 
 
 [tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.dynamic.optional-dependencies]
-dev = {file = ['requirements-dev.txt']}
+dev = { file = ['requirements-dev.txt'] }
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 warn_unused_ignores = true
@@ -29,31 +29,27 @@ line-length = 88
 
 # Lint and format Jupyter Notebooks.
 extend-include = ["*.ipynb"]
-extend-exclude = [
-  "__pycache__",
-  "data",
-  "results",
-]
+extend-exclude = ["__pycache__", "data", "results"]
 
 [tool.ruff.lint]
 select = [
-  "E",    # pycodestyle
-  "F",    # Pyflakes
-  "I",    # isort
-  "UP",   # pyupgrade
-  "ANN",  # flake8-annotations
-  "B",    # flake8-bugbear
-  "A",    # flake8-builtins
-  "C4",   # flake8-comprehensions
-  "EM",   # flake8-errmsg
-  "ISC",  # flake8-implicit-str-concat
-  "ICN",  # flake8-import-conventions
-  "LOG",  # flake8-logging
-  "PIE",  # flake8-pie
-  "PT",   # flake8-pytest-style
-  "RSE",  # flake8-raise
-  "SIM",  # flake8-simplify
-  "PTH",  # flake8-use-pathlib
+  "E",   # pycodestyle
+  "F",   # Pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "ANN", # flake8-annotations
+  "B",   # flake8-bugbear
+  "A",   # flake8-builtins
+  "C4",  # flake8-comprehensions
+  "EM",  # flake8-errmsg
+  "ISC", # flake8-implicit-str-concat
+  "ICN", # flake8-import-conventions
+  "LOG", # flake8-logging
+  "PIE", # flake8-pie
+  "PT",  # flake8-pytest-style
+  "RSE", # flake8-raise
+  "SIM", # flake8-simplify
+  "PTH", # flake8-use-pathlib
   #"PD",   # pandas-vet
   "PL",   # pylint
   "TRY",  # tryceratops
@@ -65,7 +61,9 @@ select = [
 ]
 ignore = [
   # Ignore rules that conflict with the formatter:
-  "E111", "E114", "E117",
+  "E111",
+  "E114",
+  "E117",
 
   # jaxtyping-specific problems, see https://docs.kidger.site/jaxtyping/faq/#flake8-or-ruff-are-throwing-an-error
   "F722", # syntax error in forward annotation
