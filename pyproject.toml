@@ -17,6 +17,9 @@ dependencies = { file = ["requirements.txt"] }
 [tool.setuptools.dynamic.optional-dependencies]
 dev = { file = ['requirements-dev.txt'] }
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true

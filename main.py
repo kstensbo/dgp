@@ -12,8 +12,10 @@ from jax import random
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
-_jitter = 1e-6
+from dgp.kernels import eq, cov_matrix
+import dgp.regression as gpr
 
+_jitter = 1e-6
 # Set JAX to use 64bit:
 jax.config.update("jax_enable_x64", True)
 
@@ -60,102 +62,6 @@ def generate_toydata(
     return xx, yy, dfdx, dfdy, f_grid
 
 
-def cov_matrix(
-    kernel: Callable, x: Float[Array, "N D"], y: Float[Array, "M D"]
-) -> Float[Array, "N M"]:
-    K = jax.vmap(lambda x: jax.vmap(lambda y: kernel(x, y))(y))(x)
-    return K
-
-
-def eq(lengthscale: Float[Array, "D"], variance: float) -> Callable:
-    "The exponentiated quadratic covariance function."
-
-    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
-        return variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
-
-    return k
-
-
-class CovMatrix(NamedTuple):
-    A: Callable
-    B: Callable
-    C: Callable
-    D: Callable
-
-
-def derivative_cov_func(kernel: Callable) -> CovMatrix:
-    # Assume the following covariance matrix block structure,
-    #
-    #   | A   B |
-    #   | C   D |
-    #
-    # where A is the Gram matrix of the derivative observations, D is the Gram matrix of
-    # the actual observations, and C.T == B.
-    #
-
-    # ===== Constructing the covariance function for A =====
-    # This derivative function outputs a [D, D] matrix for a pair of inputs:
-    d2kdxdy = jax.jacfwd(jax.jacrev(kernel, argnums=0), argnums=1)
-
-    # vmap over each input to the covariance function in turn. We want each argument to
-    # keep their mutual order in the resulting matrix, hence the out_axes
-    # specifications:
-    d2kdxdy_cov = jax.vmap(
-        jax.vmap(d2kdxdy, in_axes=(0, None), out_axes=0),
-        in_axes=(None, 0),
-        out_axes=1,
-    )
-
-    def ensure_2d_function_values(
-        f: Float[Array, "M"] | Float[Array, "M 1"],
-    ) -> Float[Array, "M 1"]:
-        "Make sure function values have shape [M 1]."
-        return jax.lax.cond(
-            len(f.shape) == 1, lambda x: jnp.atleast_2d(x).T, lambda x: x, f
-        )
-
-    def A(dx: Float[Array, "N D"], dy: Float[Array, "N D"]) -> Float[Array, "N N"]:
-        batched_matrix = d2kdxdy_cov(dx, dy)
-        matrix = jnp.concatenate(jnp.concatenate(batched_matrix, axis=1), axis=1)
-        return matrix
-
-    # ===== Constructing the covariance function for B =====
-
-    ddx = jax.jacfwd(kernel, argnums=0)
-    ddx_cov = jax.vmap(
-        jax.vmap(ddx, in_axes=(0, None), out_axes=0),
-        in_axes=(None, 0),
-        out_axes=2,
-    )
-
-    def B(dx: Float[Array, "N D"], y: Float[Array, "M 1"]) -> Float[Array, "N M"]:
-        batched_matrix = ddx_cov(dx, y)
-        matrix = jnp.concatenate(batched_matrix, axis=0)
-        return matrix
-
-    # ===== Constructing the covariance function for C =====
-
-    ddy = jax.jacfwd(kernel, argnums=1)
-    ddy_cov = jax.vmap(
-        jax.vmap(ddy, in_axes=(0, None), out_axes=0),
-        in_axes=(None, 0),
-        out_axes=0,
-    )
-
-    def C(x: Float[Array, "M 1"], dy: Float[Array, "N D"]) -> Float[Array, "M N"]:
-        batched_matrix = ddy_cov(x, dy)
-        matrix = jnp.concatenate(batched_matrix, axis=1)
-        return matrix
-
-    # ===== Constructing the covariance function for D =====
-    # This is just the covariance function itself.
-
-    def D(x: Float[Array, "M 1"], y: Float[Array, "M 1"]) -> Float[Array, "M M"]:
-        return cov_matrix(kernel, x, y)
-
-    return CovMatrix(A, B, C, D)
-
-
 def main() -> None:
     args = parse_args()
 
@@ -166,9 +72,12 @@ def main() -> None:
 
     x_array = jnp.linspace(0, 10, args.resx)
     y_array = jnp.linspace(0, 5, args.resy)
+
     xx, yy, dfdx, dfdy, f = generate_toydata(subkey, x_array, y_array)
 
-    # embed()
+    X = jnp.dstack((xx, yy)).reshape(-1, 2)
+    df = jnp.dstack((dfdx, dfdy)).reshape(-1, 2)
+
     # Define training set:
     train_frac = 0.03
     key, subkey = random.split(key)
@@ -179,38 +88,51 @@ def main() -> None:
         replace=False,
     )
 
-    X = jnp.dstack((xx, yy)).reshape(-1, 2)
-    df = jnp.dstack((dfdx, dfdy)).reshape(-1, 2)
-    # f = f.reshape(-1, 1)
+    # Attempt at using training observations from a circle:
+    # c = jnp.array([5.0, 2.5])
+    # r = 1.5
+    # theta = jnp.linspace(0, 2 * jnp.pi, 20)
+    # xc = r * jnp.cos(theta) + c[0]
+    # yc = r * jnp.sin(theta) + c[1]
+    #
+    # Xb = jnp.dstack((xc, yc)).squeeze()
+    #
+    # # f = f.reshape(-1, 1)
+    #
+    # idx = []
+    # for i in range(Xb.shape[0]):
+    #     min_idx = jnp.argmin(jnp.sum((X - Xb[i]) ** 2, axis=1))
+    #     idx.append(min_idx)
+    #
+    # train_idx = jnp.array(idx)
 
     Xtrain = X[train_idx]
     dftrain = df[train_idx]
 
     k = eq(lengthscale=jnp.array([1.0, 1.0]), variance=1.0)
 
-    Cov = derivative_cov_func(k)
+    gp = gpr.fit(Xtrain, dftrain, k)
 
-    K = Cov.A(Xtrain, Xtrain)
-    k = Cov.B(Xtrain, X)  # Xtrain, Xtest
+    f_pred, std = gpr.predict(X, gp)
 
-    L = jax.scipy.linalg.cholesky(K + _jitter * jnp.eye(K.shape[0]), lower=True)
-    alpha = jax.scipy.linalg.cho_solve((L, True), dftrain.reshape(-1, 1))
-
-    f_pred = k.T @ alpha
-    v = jax.scipy.linalg.solve_triangular(L, k, lower=True)
-    var = Cov.D(X, X) - v.T @ v
-
-    # f = f.reshape(args.resy, args.resx)
     f_pred = f_pred.reshape(args.resy, args.resx)
+    std = std.reshape(args.resy, args.resx)
     # f_diff = f_pred - f
 
     dfdy_pred, dfdx_pred = jnp.gradient(f_pred)
-    f_diff = jnp.sqrt((dfdx_pred - dfdx) ** 2 + (dfdy_pred - dfdy) ** 2)
+    df_pred = jnp.dstack((dfdx_pred, dfdy_pred)).reshape(-1, 2)
+    # f_diff = jnp.sqrt((dfdx_pred - dfdx) ** 2 + (dfdy_pred - dfdy) ** 2)
+
+    # Cosine similarity between gradients:
+    cosine_similarity = jnp.sum(df * df_pred, axis=1) / jnp.sqrt(
+        jnp.sum(df**2, axis=1) * jnp.sum(df_pred**2, axis=1)
+    )
+    cosine_similarity = cosine_similarity.reshape(args.resy, args.resx)
 
     fig, ax = plt.subplots(
+        3,
         2,
-        2,
-        figsize=(1.2 * (x_array[-1] - x_array[0]), 1.2 * (y_array[-1] - y_array[0])),
+        figsize=(1.2 * (x_array[-1] - x_array[0]), 1.8 * (y_array[-1] - y_array[0])),
         layout="constrained",
     )
     true_c = ax[0, 0].imshow(
@@ -230,10 +152,21 @@ def main() -> None:
     ax[1, 0].scatter(*Xtrain.T, s=12, facecolor=plt.cm.Oranges(0.5), alpha=1)
 
     diff_c = ax[1, 1].imshow(
-        f_diff,
+        # f_diff,
+        cosine_similarity,
         extent=[x_array[0], x_array[-1], y_array[0], y_array[-1]],
         origin="upper",
         cmap="Spectral",
+        # cmap="Purples",
+        vmin=-1,
+        vmax=1,
+    )
+
+    var_c = ax[2, 1].imshow(
+        std,
+        extent=[x_array[0], x_array[-1], y_array[0], y_array[-1]],
+        origin="upper",
+        cmap="Purples",
     )
 
     ax[0, 1].set_xlim(x_array[0], x_array[-1])
@@ -246,14 +179,16 @@ def main() -> None:
     plt.colorbar(true_c, ax=ax[0, 0])
     plt.colorbar(pred_c, ax=ax[1, 0])
     plt.colorbar(diff_c, ax=ax[1, 1])
+    plt.colorbar(var_c, ax=ax[2, 1])
 
     ax[0, 0].set_title("True function")
     ax[0, 1].set_title("Function gradient")
     ax[1, 0].set_title("Predicted function")
-    ax[1, 1].set_title("Gradient difference")
+    ax[1, 1].set_title("Cosine similarity of gradients")
+    ax[2, 1].set_title("Predictive uncertainty (1 std)")
 
-    # plt.show()
-    plt.savefig("gp_on_derivative_obs_toy_data.pdf")
+    plt.show()
+    # plt.savefig("gp_on_derivative_obs_toy_data.pdf")
 
 
 def parse_args() -> argparse.Namespace:
