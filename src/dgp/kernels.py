@@ -97,7 +97,7 @@ def derivative_cov_func(kernel: Callable) -> CovMatrix:
     )
 
     def B(dx: Float[Array, "N D"], y: Float[Array, "M 1"]) -> Float[Array, "N M"]:
-        batched_matrix = ddx_cov(dx, y)
+        batched_matrix = -ddx_cov(dx, y)
         matrix = jnp.concatenate(batched_matrix, axis=0)
         return matrix
 
@@ -111,7 +111,7 @@ def derivative_cov_func(kernel: Callable) -> CovMatrix:
     )
 
     def C(x: Float[Array, "M 1"], dy: Float[Array, "N D"]) -> Float[Array, "M N"]:
-        batched_matrix = ddy_cov(x, dy)
+        batched_matrix = -ddy_cov(x, dy)
         matrix = jnp.concatenate(batched_matrix, axis=1)
         return matrix
 
