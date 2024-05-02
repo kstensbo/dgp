@@ -3,7 +3,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float
 
 
 def cov_matrix(
@@ -20,15 +20,28 @@ def eq(lengthscale: Float[Array, "D"], variance: float) -> Callable:
     "The exponentiated quadratic covariance function."
 
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
-        return variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
+        X = (x - y) / lengthscale
+        return variance * jnp.exp(-0.5 * X.dot(X))
 
     return k
 
 
-def eq_kernel(params: PyTree, x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
-    variance = params["variance"]
-    lengthscale = params["lengthscale"]
-    return variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
+def ess(
+    lengthscale: Float[Array, "D"], variance: float, period: float = 2 * jnp.pi
+) -> Callable:
+    "The exponential sine square (periodic) covariance function."
+
+    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
+        X = jnp.sin(jnp.pi * jnp.abs(x - y) / period) / lengthscale
+        return variance * jnp.exp(-2.0 * X.dot(X))
+
+    return k
+
+
+# def eq_kernel(params: PyTree, x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
+#     variance = params["variance"]
+#     lengthscale = params["lengthscale"]
+#     return variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
 
 
 class CovMatrix(NamedTuple):
@@ -61,13 +74,13 @@ def derivative_cov_func(kernel: Callable) -> CovMatrix:
         out_axes=1,
     )
 
-    def ensure_2d_function_values(
-        f: Float[Array, "M"] | Float[Array, "M 1"],
-    ) -> Float[Array, "M 1"]:
-        "Make sure function values have shape [M 1]."
-        return jax.lax.cond(
-            len(f.shape) == 1, lambda x: jnp.atleast_2d(x).T, lambda x: x, f
-        )
+    # def ensure_2d_function_values(
+    #     f: Float[Array, "M"] | Float[Array, "M 1"],
+    # ) -> Float[Array, "M 1"]:
+    #     "Make sure function values have shape [M 1]."
+    #     return jax.lax.cond(
+    #         len(f.shape) == 1, lambda x: jnp.atleast_2d(x).T, lambda x: x, f
+    #     )
 
     def A(dx: Float[Array, "N D"], dy: Float[Array, "N D"]) -> Float[Array, "N N"]:
         batched_matrix = d2kdxdy_cov(dx, dy)
