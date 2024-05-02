@@ -113,7 +113,8 @@ def main() -> None:
 
     gp = gpr.fit(Xtrain, dftrain, k)
 
-    f_pred, std = gpr.predict(X, gp)
+    f_pred, covar = gpr.predict(X, gp)
+    std = jnp.sqrt(jnp.diag(covar))
 
     f_pred = f_pred.reshape(args.resy, args.resx)
     std = std.reshape(args.resy, args.resx)

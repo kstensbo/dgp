@@ -37,10 +37,9 @@ def predict(
 
     f_pred = k.T @ gp.alpha
     v = jax.scipy.linalg.solve_triangular(gp.L, k, lower=True)
-    var = gp.cov_matrices.D(X, X) - v.T @ v
-    std = jnp.sqrt(jnp.diag(var))
+    covar = gp.cov_matrices.D(X, X) - v.T @ v
 
-    return f_pred, std
+    return f_pred, covar
 
 
 def logp(gp: GP) -> float:
