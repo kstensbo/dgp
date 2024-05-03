@@ -19,12 +19,17 @@ class GP(NamedTuple):
     cov_matrices: CovMatrix
 
 
-def fit(X: Float[Array, "N D"], y: Float[Array, "N"], kernel: Callable) -> GP:
+def fit(
+    X: Float[Array, "N D"],
+    y: Float[Array, "N"],
+    kernel: Callable,
+    jitter: float = _jitter,
+) -> GP:
     cov_matrices = derivative_cov_func(kernel)
 
     K = cov_matrices.A(X, X)
 
-    L = jax.scipy.linalg.cholesky(K + _jitter * jnp.eye(K.shape[0]), lower=True)
+    L = jax.scipy.linalg.cholesky(K + jitter * jnp.eye(K.shape[0]), lower=True)
     alpha = jax.scipy.linalg.cho_solve((L, True), y.reshape(-1, 1))
 
     return GP(kernel, X, y, L, alpha, cov_matrices)
