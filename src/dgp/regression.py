@@ -3,9 +3,9 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float
 
-from dgp.kernels import derivative_cov_func, CovMatrix
+from dgp.kernels import CovMatrix, derivative_cov_func
 
 _jitter = 1e-6
 
@@ -44,7 +44,7 @@ def predict(
 
 def logp(gp: GP) -> float:
     return (
-        -0.5 * jnp.inner(gp.y, gp.alpha)
+        -0.5 * jnp.dot(gp.y.ravel(), gp.alpha.ravel())
         - jnp.sum(jnp.log(jnp.diag(gp.L)))
         - 0.5 * gp.X.shape[0] * jnp.log(2 * jnp.pi)
     )
