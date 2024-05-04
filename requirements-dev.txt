@@ -12,3 +12,6 @@ ruff >= 0.3.0
 
 # static type checking
 mypy >= 1.8.0
+
+# For example scripts:
+tqdm>=4.66
