@@ -259,8 +259,8 @@ def main() -> None:
     )
 
     print("Optimised parameters:")
-    for key, val in params.items():
-        print(f"  {key} = {val}")
+    print(f"  length scales: {jnp.exp(params['log_lengthscale'])}")
+    print(f"  variance: {params['variance']}")
 
     # Use the optimised parameters:
     k = eq(lengthscale=jnp.exp(params["log_lengthscale"]), variance=params["variance"])
