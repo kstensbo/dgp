@@ -1,5 +1,5 @@
 <div align="center">
-<img src="dgp_logo.png" alt="logo"></img>
+<img src="assets/dgp_logo.svg" alt="logo" width="250px"></img>
 </div>
 
 # `dgp`
