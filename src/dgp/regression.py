@@ -3,11 +3,12 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax import random
+from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
+from dgp import _default_jitter
 from dgp.kernels import CovMatrix, derivative_cov_func
-
-_jitter = 1e-6
 
 
 class GP(NamedTuple):
@@ -19,7 +20,13 @@ class GP(NamedTuple):
     cov_matrices: CovMatrix
 
 
-def fit(X: Float[Array, "N D"], y: Float[Array, "N"], kernel: Callable) -> GP:
+def fit(
+    X: Float[Array, "N D"],
+    y: Float[Array, "N"],
+    kernel: Callable,
+    _jitter: float = _default_jitter,
+) -> GP:
+    "Fit a GP to data X, y."
     cov_matrices = derivative_cov_func(kernel)
 
     K = cov_matrices.A(X, X)
@@ -33,6 +40,7 @@ def fit(X: Float[Array, "N D"], y: Float[Array, "N"], kernel: Callable) -> GP:
 def predict(
     X: Float[Array, "N D"], gp: GP
 ) -> tuple[Float[Array, "N"], Float[Array, "N"]]:
+    "Compute predictive mean and covariance at locations X."
     k = gp.cov_matrices.B(gp.X, X)
 
     f_pred = k.T @ gp.alpha
@@ -43,8 +51,28 @@ def predict(
 
 
 def logp(gp: GP) -> float:
+    "Compute the log-marginal likelihood."
     return (
         -0.5 * jnp.dot(gp.y.ravel(), gp.alpha.ravel())
         - jnp.sum(jnp.log(jnp.diag(gp.L)))
         - 0.5 * gp.X.shape[0] * jnp.log(2 * jnp.pi)
     )
+
+
+def sample(
+    key: ArrayLike,
+    X: Float[Array, "N D"],
+    gp: GP,
+    num_samples: int = 1,
+    _jitter: float = _default_jitter,
+) -> Float[Array, "num_samples N"]:
+    "Sample from a GP at locations X."
+
+    _, K = predict(X, gp)
+
+    L = jax.scipy.linalg.cholesky(K + _jitter * jnp.eye(*K.shape), lower=True)
+    U = random.normal(key, shape=(num_samples, X.shape[0]))
+
+    samples = jax.vmap(lambda u: L @ u)(U)
+
+    return samples
