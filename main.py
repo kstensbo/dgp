@@ -3,11 +3,9 @@ import argparse
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import optax
-import tqdm
 from jax import random
 from jax.typing import ArrayLike
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float
 
 import dgp.regression as gpr
 from dgp.kernels import cov_matrix, eq
@@ -101,51 +99,7 @@ def main() -> None:
 
     # Define the covariance function to use and the initial hyperparameters:
     kernel = eq
-    params = dict(lengthscale=jnp.array([2.0, 2.0]), variance=2.0)
-
-    optimiser = optax.adam(1e-1)
-    opt_state = optimiser.init(params)
-
-    def objective(
-        params: PyTree,
-        X: Float[Array, "N D"],
-        y: Float[Array, "N"],
-    ) -> float:
-        k = kernel(**params)
-        gp = gpr.fit(X, y, k)
-
-        return -gpr.logp(gp)
-
-    loss_grad_fn = jax.value_and_grad(objective)
-
-    @jax.jit
-    def step_fn(
-        params: PyTree,
-        opt_state: optax.OptState,
-        X: Float[Array, "N D"],
-        y: Float[Array, "N"],
-    ) -> tuple[PyTree, optax.OptState, float]:
-        neg_logp, grad = loss_grad_fn(params, X, y)
-        update, opt_state = optimiser.update(grad, opt_state)
-        params = optax.apply_updates(params, update)
-        return params, opt_state, neg_logp
-
-    logger = dict(
-        epoch=[],
-        logp=[],
-    )
-    pbar = tqdm.tqdm(range(args.num_epochs), desc="Epoch")
-    for epoch in pbar:
-        try:
-            params, opt_state, neg_logp = step_fn(params, opt_state, Xtrain, dftrain)
-
-            logger["epoch"].append(epoch)
-            logger["logp"].append(-neg_logp)
-
-            pbar.set_description(f"Epoch: {epoch}, log marginal: {-neg_logp:g}")
-
-        except KeyboardInterrupt:
-            break
+    params = gpr.tune(kernel, Xtrain, dftrain, num_epochs=args.num_epochs)
 
     print("Optimised parameters:")
     for key, val in params.items():

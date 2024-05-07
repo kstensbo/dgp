@@ -3,7 +3,9 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+import optax
+import tqdm
+from jaxtyping import Array, Float, PyTree
 
 from dgp.kernels import CovMatrix, derivative_cov_func
 
@@ -48,8 +50,58 @@ def predict(
 
 
 def logp(gp: GP) -> float:
-    return (
+    return float(
         -0.5 * jnp.dot(gp.y.ravel(), gp.alpha.ravel())
         - jnp.sum(jnp.log(jnp.diag(gp.L)))
         - 0.5 * gp.X.shape[0] * jnp.log(2 * jnp.pi)
     )
+
+
+DEFAULT_PARAMS = {"lengthscale": jnp.array([2.0, 2.0]), "variance": 2.0}
+
+
+def tune(
+    kernel: Callable, X: Array, y: Array, num_epochs: int, params: dict = DEFAULT_PARAMS
+) -> dict:
+    def objective(
+        params: PyTree,
+        X: Float[Array, "N D"],
+        y: Float[Array, "N"],
+    ) -> float:
+        k = kernel(**params)
+        gp = fit(X, y, k)
+
+        return -logp(gp)
+
+    loss_grad_fn = jax.value_and_grad(objective)
+
+    @jax.jit
+    def step_fn(
+        params: PyTree,
+        opt_state: optax.OptState,
+        X: Float[Array, "N D"],
+        y: Float[Array, "N"],
+    ) -> tuple[PyTree, optax.OptState, float]:
+        neg_logp, grad = loss_grad_fn(params, X, y)
+        update, opt_state = optimiser.update(grad, opt_state)
+        params = optax.apply_updates(params, update)
+        return params, opt_state, neg_logp
+
+    optimiser = optax.adam(1e-1)
+    opt_state = optimiser.init(params)
+    logger = {"epoch": [], "logp": []}
+
+    pbar = tqdm.tqdm(range(num_epochs), desc="Epoch")
+    for epoch in pbar:
+        try:
+            params, opt_state, neg_logp = step_fn(params, opt_state, X, y)
+
+            logger["epoch"].append(epoch)
+            logger["logp"].append(-neg_logp)
+
+            pbar.set_description(f"Epoch: {epoch}, log marginal: {-neg_logp:g}")
+
+        except KeyboardInterrupt:  # noqa: PERF203
+            break
+
+    return params
