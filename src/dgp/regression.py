@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PyTree
 
 from dgp.kernels import CovMatrix, derivative_cov_func
 
-_jitter = 1e-6
+_jitter = 1e-4
 
 
 class GP(NamedTuple):
@@ -49,8 +49,8 @@ def predict(
     return f_pred, covar
 
 
-def logp(gp: GP) -> float:
-    return float(
+def logp(gp: GP) -> Float:
+    return (
         -0.5 * jnp.dot(gp.y.ravel(), gp.alpha.ravel())
         - jnp.sum(jnp.log(jnp.diag(gp.L)))
         - 0.5 * gp.X.shape[0] * jnp.log(2 * jnp.pi)
