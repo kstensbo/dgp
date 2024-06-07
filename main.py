@@ -1,21 +1,19 @@
 import argparse
-from collections.abc import Callable
-from typing import NamedTuple
 
-# import cola
-# import gpjax as gpx
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from IPython import embed  # noqa
 from jax import random
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 
-from dgp.kernels import eq, cov_matrix
 import dgp.regression as gpr
+from dgp.kernels import cov_matrix, eq
+
+from IPython import embed  # noqa
 
 _jitter = 1e-6
+
 # Set JAX to use 64bit:
 jax.config.update("jax_enable_x64", True)
 
@@ -35,16 +33,6 @@ def generate_toydata(
 
     X = jnp.stack([xx, yy], axis=-1).reshape(x_array.shape[0] * y_array.shape[0], 2)
 
-    # kernel = gpx.kernels.RBF(
-    #    lengthscale=jnp.array([1.0, 1.0]), variance=jnp.array([1.0])
-    # )
-    # K = kernel.gram(X)
-    ## L = jnp.linalg.cholesky(K)
-    # L = cola.Cholesky()(K + _jitter * cola.ops.I_like(K))
-
-    # K2 = K.to_dense()
-    # L2 = jnp.linalg.cholesky(K2 + _jitter * jnp.eye(K2.shape[0]))
-
     k = eq(lengthscale=jnp.array([1.0, 1.0]), variance=1.0)
     K = cov_matrix(k, X, X)
     L = jnp.linalg.cholesky(K + _jitter * jnp.eye(K.shape[0]))
@@ -52,7 +40,6 @@ def generate_toydata(
     u = random.normal(key, shape=[X.shape[0], 1])
 
     f = L @ u
-    # y2 = L2 @ u
 
     # Derivative of y:
     f_grid = f.reshape(y_array.shape[0], x_array.shape[0])
@@ -69,7 +56,6 @@ def main() -> None:
     key, subkey = random.split(key)
 
     # Set up toy dataset:
-
     x_array = jnp.linspace(0, 10, args.resx)
     y_array = jnp.linspace(0, 5, args.resy)
 
@@ -109,27 +95,37 @@ def main() -> None:
     Xtrain = X[train_idx]
     dftrain = df[train_idx]
 
-    k = eq(lengthscale=jnp.array([1.0, 1.0]), variance=1.0)
+    # ==================== Optimise the GP ====================
 
+    # Define the covariance function to use and the initial hyperparameters:
+    kernel = eq
+    params = gpr.tune(kernel, Xtrain, dftrain, num_epochs=args.num_epochs)
+
+    print("Optimised parameters:")
+    for key, val in params.items():
+        print(f"  {key} = {val}")
+
+    # Use the optimised parameters:
+    k = eq(**params)
     gp = gpr.fit(Xtrain, dftrain, k)
 
     f_pred, covar = gpr.predict(X, gp)
     std = jnp.sqrt(jnp.diag(covar))
 
+    # Reshape to grid and compute gradients:
     f_pred = f_pred.reshape(args.resy, args.resx)
     std = std.reshape(args.resy, args.resx)
-    # f_diff = f_pred - f
 
     dfdy_pred, dfdx_pred = jnp.gradient(f_pred)
     df_pred = jnp.dstack((dfdx_pred, dfdy_pred)).reshape(-1, 2)
-    # f_diff = jnp.sqrt((dfdx_pred - dfdx) ** 2 + (dfdy_pred - dfdy) ** 2)
 
-    # Cosine similarity between gradients:
+    # Cosine similarity between predicted and true gradients:
     cosine_similarity = jnp.sum(df * df_pred, axis=1) / jnp.sqrt(
         jnp.sum(df**2, axis=1) * jnp.sum(df_pred**2, axis=1)
     )
     cosine_similarity = cosine_similarity.reshape(args.resy, args.resx)
 
+    # ==================== Plotting ====================
     fig, ax = plt.subplots(
         3,
         2,
@@ -143,7 +139,7 @@ def main() -> None:
     )
     ax[0, 0].scatter(*Xtrain.T, s=12, facecolor=plt.cm.Oranges(0.5), alpha=1)
 
-    ax[0, 1].quiver(xx, yy, dfdx.ravel(), dfdy.ravel(), f.ravel())
+    ax[0, 1].quiver(xx, yy, dfdx.ravel(), dfdy.ravel(), f.ravel(), angles="xy")
 
     pred_c = ax[1, 0].imshow(
         f_pred,
@@ -163,6 +159,10 @@ def main() -> None:
         vmax=1,
     )
 
+    ax[2, 0].plot(
+        logger["epoch"], logger["logp"], c="C0", label="Marginal log-likelihood"
+    )
+
     var_c = ax[2, 1].imshow(
         std,
         extent=[x_array[0], x_array[-1], y_array[0], y_array[-1]],
@@ -172,10 +172,10 @@ def main() -> None:
 
     ax[0, 1].set_xlim(x_array[0], x_array[-1])
     ax[0, 1].set_ylim(y_array[0], y_array[-1])
-    # ax[1].set_ylim(y_array[-1], y_array[0])
+    ax[0, 1].set_ylim(y_array[-1], y_array[0])
     ax[0, 1].set_aspect("equal")
-    # ax[1].set_aspect("equal", adjustable="datalim")
-    # ax[1].autoscale()
+
+    ax[2, 0].set_ylim(bottom=-100, top=300)
 
     plt.colorbar(true_c, ax=ax[0, 0])
     plt.colorbar(pred_c, ax=ax[1, 0])
@@ -183,10 +183,14 @@ def main() -> None:
     plt.colorbar(var_c, ax=ax[2, 1])
 
     ax[0, 0].set_title("True function")
-    ax[0, 1].set_title("Function gradient")
+    ax[0, 1].set_title("Gradient field")
     ax[1, 0].set_title("Predicted function")
     ax[1, 1].set_title("Cosine similarity of gradients")
+    ax[2, 0].set_title("Marginal log-likelihood")
     ax[2, 1].set_title("Predictive uncertainty (1 std)")
+
+    ax[2, 0].set_xlabel("Epoch")
+    ax[2, 0].set_ylabel("Marginal log-likelihood")
 
     plt.show()
     # plt.savefig("gp_on_derivative_obs_toy_data.pdf")
@@ -196,10 +200,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument(
-        "--resx", type=int, default=50, help="Surface resolution in x direction."
+        "--resx", type=int, default=64, help="Surface resolution in x direction."
     )
     parser.add_argument(
-        "--resy", type=int, default=25, help="Surface resolution in y direction."
+        "--resy", type=int, default=32, help="Surface resolution in y direction."
+    )
+    parser.add_argument(
+        "--num_epochs", type=int, default=1000, help="Number of training epochs."
     )
 
     args = parser.parse_args()

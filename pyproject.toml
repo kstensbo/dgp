@@ -7,7 +7,7 @@ name = "dgp"
 version = "0.0.1"
 authors = [{ name = "Kristoffer Stensbo-Smidt", email = "kss@prior.info" }]
 description = "Implementations of Gaussian processes for derivative observations."
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dynamic = ["dependencies", "optional-dependencies"]
 
 
@@ -93,6 +93,17 @@ unfixable = []
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 
+[tool.ruff.lint.isort]
+section-order = [
+  "future",
+  "standard-library",
+  "first-party",
+  "third-party",
+  "local-folder",
+  "dgp",
+  "ipython",
+]
+
 [tool.ruff.lint.isort.sections]
-# Put IPython into its own section.
-"IPython" = ["IPython"]
+ipython = ["IPython"]
+dgp = ["dgp"]

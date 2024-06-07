@@ -12,3 +12,9 @@ ruff >= 0.3.0
 
 # static type checking
 mypy >= 1.8.0
+
+# For example scripts:
+tqdm>=4.66
+optax>=0.1.9
+ipython>=8.22.0
+matplotlib>=3.7.0
