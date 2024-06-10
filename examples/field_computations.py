@@ -91,92 +91,17 @@ def generate_toydata(
     # )
 
     # Additional locations for computing gradients at training locations:
-    gradient_epsilon = 1e-2
+    gradient_epsilon = 1e-2  # Resolution for finite differences
 
+    # Compute grid around each training point and flatten:
     grad_x = jnp.linspace(-gradient_epsilon, gradient_epsilon, 3)
     grad_y = jnp.linspace(-gradient_epsilon, gradient_epsilon, 3)
     grad_mesh = jnp.array(jnp.meshgrid(grad_x, grad_y))
     X_train_mesh = grad_mesh + X_train[..., None, None]
     X_grad = jnp.rollaxis(X_train_mesh, 1, 4).reshape(-1, 2)
-    # embed()
 
-    def get_cross_locations(
-        X: Float[Array, "N D"], epsilon: float = 1e-2
-    ) -> Float[Array, "4 N D"]:
-        dx = jnp.zeros_like(X).at[:, 0].set(epsilon)
-        dy = jnp.zeros_like(X).at[:, 1].set(epsilon)
-        locations = jnp.array(
-            [
-                X + dx,
-                X - dx,
-                X + dy,
-                X - dy,
-            ]
-        )
-        return locations
-
-    # grad_loc = get_cross_locations(X_train, gradient_epsilon)
-    # X_grad = jnp.concatenate(
-    #     grad_loc,
-    #     axis=0,
-    # )
-
-    # Additional locations for computing the vector field around the training locations
-    # used to compute the curl.
-    # In 2D, we need to compute dFy/dx - dFx/dy. For, e.g., dFy/dx, we must compute (Fx,
-    # Fy) at both x + dx and x - dx
-
-    # def get_cross_locations_for_curl(
-    #     X: Float[Array, "N D"], epsilon: float = 1e-2
-    # ) -> Float[Array, "12 N D"]:
-    #     dx = jnp.zeros_like(X).at[:, 0].set(epsilon)
-    #     dy = jnp.zeros_like(X).at[:, 1].set(epsilon)
-    #
-    #     # [4 N D]
-    #     cross = get_cross_locations(X, epsilon)
-    #
-    #     locations = jnp.array(
-    #         [
-    #             # For X + dx:
-    #             cross[0],
-    #             cross[0] + dx,
-    #             cross[0] + dy,
-    #             # cross[0] - dy,
-    #             # For X - dx:
-    #             cross[1],
-    #             cross[1] - dx,
-    #             cross[1] + dy,
-    #             # cross[1] - dy,
-    #             # For X + dy:
-    #             cross[2],
-    #             cross[2] + dy,
-    #             # cross[2] + dx,
-    #             cross[2] - dx,
-    #             # For X - dy:
-    #             cross[3],
-    #             cross[3] - dy,
-    #             cross[3] + dx,
-    #             cross[3] - dx,
-    #         ]
-    #     )
-    #     return locations
-
-    # Shift all training points:
-    # X_train_shift = X_train + gradient_epsilon * jnp.ones_like(X_train)
-    # X_grad_shift = jnp.concatenate(
-    #     get_cross_locations(X_train_shift, gradient_epsilon), axis=0
-    # )
-
-    X = jnp.concatenate(
-        (
-            X_grid,
-            X_train,
-            X_grad,
-            # X_train_shift,
-            # X_grad_shift,
-        ),
-        axis=0,
-    )
+    # All locations to sample function values at:
+    X = jnp.concatenate((X_grid, X_train, X_grad), axis=0)
 
     k = eq(lengthscale=jnp.array([1.0, 1.0]), variance=1.0)
     K = cov_matrix(k, X, X)
@@ -188,63 +113,23 @@ def generate_toydata(
     # Transform noise to GP prior sample:
     f = L @ u
 
-    (
-        f_grid,
-        f_train,
-        f_grad,
-        # f_train_shift,
-        # f_grad_shift,
-    ) = jnp.split(
-        f,
-        jnp.array(
-            [
-                X_grid.shape[0],
-                X_train.shape[0],
-                # X_grad.shape[0],
-                # X_train_shift.shape[0],
-            ]
-        ).cumsum(),
+    f_grid, f_train, f_grad = jnp.split(
+        f, jnp.array([X_grid.shape[0], X_train.shape[0]]).cumsum()
     )
 
     f_grid = f_grid.reshape(y_array.shape[0], x_array.shape[0])
-    # f_grid = jnp.flipud(f_grid)
 
     # Function derivative:
     dfdy, dfdx = jnp.gradient(f_grid)
     df_grid = jnp.dstack((dfdx, dfdy)).reshape(-1, 2)
 
     # Function derivative at training locations:
-    # f_grad_dx_plus, f_grad_dx_minus, f_grad_dy_plus, f_grad_dy_minus = jnp.split(
-    #     f_grad,
-    #     jnp.array([num_training_data] * 3).cumsum(),
-    # )
     f_grad = f_grad.reshape(-1, 3, 3)
     df_train_dy, df_train_dx = jnp.gradient(
         f_grad, gradient_epsilon, gradient_epsilon, axis=(1, 2)
     )
-
     df_train = jnp.dstack((df_train_dx[:, 1, 1], df_train_dy[:, 1, 1])).reshape(-1, 2)
-    # f_grad = jnp.split(f_grad, 4)
-    # df_train = jnp.concatenate(
-    #     (
-    #         (f_grad[0] - f_grad[1]) / (2 * gradient_epsilon),
-    #         (f_grad[2] - f_grad[3]) / (2 * gradient_epsilon),
-    #     ),
-    #     # (
-    #     #     (f_grad_dx_plus - f_grad_dx_minus) / (2 * gradient_epsilon),
-    #     #     (f_grad_dy_plus - f_grad_dy_minus) / (2 * gradient_epsilon),
-    #     # ),
-    #     axis=1,
-    # )
     assert df_train.shape == (num_training_data, 2)
-
-    # f_grad_shift = jnp.split(f_grad_shift, 4)
-    # df_train_shift = jnp.concatenate(
-    #     (
-    #         (f_grad_shift[0] - f_grad_shift[1]) / (2 * gradient_epsilon),
-    #         (f_grad_shift[2] - f_grad_shift[3]) / (2 * gradient_epsilon),
-    #     )
-    # )
 
     function_data = Dataset(
         X=X_grid,
@@ -258,22 +143,14 @@ def generate_toydata(
         X=X_train,
         f=f_train,
         y=df_train,
-        # y=jnp.zeros_like(X_train),
         theta=theta,
     )
 
-    # training_set_shift = CircleDataset(
-    #     X=X_train_shift,
-    #     f=f_train_shift,
-    #     y=df_train_shift,
-    #     # y=jnp.zeros_like(X_train),
-    #     theta=theta,
-    # )
-
-    return function_data, training_set  # , training_set_shift
+    return function_data, training_set
 
 
-def compute_curl_from_grid(data: Dataset) -> jnp.ndarray:
+def compute_curl_from_2d_grid(data: Dataset) -> Float[Array, "dim_y dim_x"]:
+    "Computes the curl for an ND grid."
     f = data.y
 
     fy, fx = jnp.gradient(f, data.resy, data.resx)
@@ -295,17 +172,12 @@ def main() -> None:
     x_array = jnp.linspace(0, 10, args.resx)
     y_array = jnp.linspace(0, 5, args.resy)
 
-    (
-        function_data,
-        training_set,
-        # training_set_shift,
-    ) = generate_toydata(
+    function_data, training_set = generate_toydata(
         subkey, x_array, y_array, num_training_data=args.num_training_data
     )
 
     # Computing the curl:
-    # curl_z = jnp.array()
-    curl = compute_curl_from_grid(function_data)
+    curl = compute_curl_from_2d_grid(function_data)
 
     # ==================== Plotting ====================
     _, ax = plt.subplots(
@@ -324,12 +196,10 @@ def main() -> None:
         origin="lower",
     )
 
-    # ax[0, 0].scatter(*training_set.X.T, s=12, facecolor=plt.cm.Oranges(0.5), alpha=1)
     ax[0, 0].scatter(
         *training_set.X.T,
         s=15,
         c=training_set.f.ravel(),
-        # facecolor=plt.cm.viridis(training_set.f.ravel()),
         cmap=plt.cm.viridis,
         vmin=function_data.y.min(),
         vmax=function_data.y.max(),
@@ -353,7 +223,6 @@ def main() -> None:
         scale=2,
         width=0.005,
         norm=colors.Normalize(vmin=function_data.y.min(), vmax=function_data.y.max()),
-        # cmap=plt.cm.Reds,
     )
 
     div_c = ax[1, 0].imshow(
@@ -374,11 +243,8 @@ def main() -> None:
 
     ax[0, 1].set_xlim(x_array[0], x_array[-1])
     ax[0, 1].set_ylim(y_array[0], y_array[-1])
-    # ax[0, 1].set_ylim(y_array[-1], y_array[0])
     ax[0, 1].set_aspect("equal")
     ax[0, 0].set_aspect("equal")
-
-    # ax[2, 0].set_ylim(bottom=-200, top=200)
 
     fmt = mpl.ticker.ScalarFormatter(useMathText=True)
     # fmt.set_powerlimits((0, 0))
