@@ -13,16 +13,16 @@ from dgp.kernels import CovMatrix, derivative_cov_func
 
 class GP(NamedTuple):
     kernel: Callable
-    X: Float[Array, "N D"]
-    y: Float[Array, "N"]
+    X: Float[Array, "N Dx"]
+    y: Float[Array, "N Dy"]
     L: Float[Array, "N N"]
     alpha: Float[Array, "N 1"]
     cov_matrices: CovMatrix
 
 
 def fit(
-    X: Float[Array, "N D"],
-    y: Float[Array, "N"],
+    X: Float[Array, "N Dx"],
+    y: Float[Array, "N Dy"],
     kernel: Callable,
     _jitter: float = _default_jitter,
 ) -> GP:
