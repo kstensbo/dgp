@@ -26,9 +26,7 @@ def eq(lengthscale: Float[Array, "D"], variance: float) -> Callable:
     return k
 
 
-def ess(
-    lengthscale: Float[Array, "D"], variance: float, period: float = 2 * jnp.pi
-) -> Callable:
+def ess(lengthscale: Float[Array, "D"], variance: float, period: float) -> Callable:
     "The exponential sine square (periodic) covariance function."
 
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
@@ -36,12 +34,6 @@ def ess(
         return variance * jnp.exp(-2.0 * X.dot(X))
 
     return k
-
-
-# def eq_kernel(params: PyTree, x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
-#     variance = params["variance"]
-#     lengthscale = params["lengthscale"]
-#     return variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
 
 
 class CovMatrix(NamedTuple):

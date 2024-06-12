@@ -7,7 +7,7 @@ name = "dgp"
 version = "0.0.1"
 authors = [{ name = "Kristoffer Stensbo-Smidt", email = "kss@prior.info" }]
 description = "Implementations of Gaussian processes for derivative observations."
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dynamic = ["dependencies", "optional-dependencies"]
 
 
