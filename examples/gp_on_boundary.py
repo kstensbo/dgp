@@ -59,6 +59,13 @@ def parse_args() -> argparse.Namespace:
         help="Optimiser (choose any defined in optax).",
     )
     parser.add_argument("--lr", type=float, default=1e-1, help="Learning rate.")
+    parser.add_argument(
+        "--scatter",
+        type=str,
+        choices=["random", "even"],
+        default="even",
+        help="Distribution of data along the circle.",
+    )
 
     args = parser.parse_args()
     return args
@@ -66,33 +73,36 @@ def parse_args() -> argparse.Namespace:
 
 def generate_toydata(
     key: ArrayLike,
-    x_array: ArrayLike,
-    y_array: ArrayLike,
+    mesh: ArrayLike,
     num_training_data: int,
     num_test_data: int = 256,
+    data_scatter: str = "even",
     _jitter: float = _default_jitter,
 ) -> tuple[
     Dataset,
     CircleDataset,
     CircleDataset,
 ]:
-    xx, yy = jnp.meshgrid(x_array, y_array)
-
     # Construct input coordinates for grid, shape [N, 2]:
-    X_grid = jnp.stack([xx, yy], axis=-1).reshape(-1, 2)
+    X_grid = jnp.stack(mesh, axis=-1).reshape(-1, 2)
 
     # For circle data:
-    centre = jnp.array([x_array.mean(), y_array.mean()])
+    centre = jnp.array([mesh[0].mean(), mesh[1].mean()])
     radius = 1.5
 
-    # Use randomly selected points on the circle:
-    key, subkey = random.split(key)
-    theta = random.uniform(
-        subkey[0], shape=(num_training_data, 1), minval=0, maxval=2 * jnp.pi
-    ).sort()
+    if data_scatter == "random":
+        # Use randomly selected points on the circle:
+        key, subkey = random.split(key)
+        theta = random.uniform(
+            subkey, shape=(num_training_data, 1), minval=0, maxval=2 * jnp.pi
+        ).sort()
+    elif data_scatter == "even":
+        # Use evenly spaced points on the circle:
+        theta = jnp.linspace(0, 2 * jnp.pi, num_training_data)[:, None]
 
-    # Use evenly spaced points on the circle:
-    theta = jnp.linspace(0, 2 * jnp.pi, num_training_data)[:, None]
+    else:
+        err_msg = f"Unknown data_scatter value: {data_scatter}"
+        raise ValueError(err_msg)
 
     points_x = radius * jnp.cos(theta) + centre[0]
     points_y = radius * jnp.sin(theta) + centre[1]
@@ -141,7 +151,7 @@ def generate_toydata(
         f, jnp.array([X_grid.shape[0], X_train.shape[0], X_test.shape[0]]).cumsum()
     )
 
-    f_grid = f_grid.reshape(y_array.shape[0], x_array.shape[0])
+    f_grid = f_grid.reshape(*mesh[0].shape)
 
     # Function derivative:
     dfdy, dfdx = jnp.gradient(f_grid)
@@ -159,8 +169,8 @@ def generate_toydata(
         X=X_grid,
         y=f_grid,
         dy=df_grid,
-        resx=x_array[1] - x_array[0],
-        resy=y_array[1] - y_array[0],
+        resx=mesh[0][0, 1] - mesh[0][0, 0],
+        resy=mesh[1][1, 0] - mesh[1][0, 0],
     )
 
     training_set = CircleDataset(
@@ -271,9 +281,13 @@ def main() -> None:  # noqa: PLR0915
     # Set up toy dataset:
     x_array = jnp.linspace(0, 10, args.resx)
     y_array = jnp.linspace(0, 5, args.resy)
+    mesh = jnp.meshgrid(x_array, y_array)
 
     function_data, training_set, test_set = generate_toydata(
-        subkey, x_array, y_array, num_training_data=args.num_training_data
+        subkey,
+        mesh,
+        num_training_data=args.num_training_data,
+        data_scatter=args.scatter,
     )
 
     # ==================== Optimise the GP ====================
@@ -328,11 +342,15 @@ def main() -> None:  # noqa: PLR0915
     )
 
     grid_extent = [x_array[0], x_array[-1], y_array[0], y_array[-1]]
+    vmin = jnp.min(jnp.array([function_data.y.min(), grid_mean.min()]))
+    vmax = jnp.max(jnp.array([function_data.y.max(), grid_mean.max()]))
 
     true_c = ax[0, 0].imshow(
         function_data.y,
         extent=grid_extent,
         origin="lower",
+        vmin=vmin,
+        vmax=vmax,
     )
 
     ax[0, 0].plot(*test_set.X.T, ls="--", marker="", color="w", alpha=0.5, zorder=5)
@@ -341,8 +359,8 @@ def main() -> None:  # noqa: PLR0915
         s=18,
         c=training_set.f.ravel(),
         cmap=plt.cm.viridis,
-        vmin=function_data.y.min(),
-        vmax=function_data.y.max(),
+        vmin=vmin,
+        vmax=vmax,
         edgecolors="w",
         linewidths=0.5,
         alpha=1,
@@ -354,6 +372,7 @@ def main() -> None:  # noqa: PLR0915
         *function_data.dy.T,
         function_data.y.ravel(),
         angles="xy",
+        norm=Normalize(vmin=vmin, vmax=vmax),
     )
     ax[0, 1].plot(*test_set.X.T, ls="--", marker="", color="k", alpha=0.5, zorder=5)
     ax[0, 1].quiver(
@@ -364,7 +383,7 @@ def main() -> None:  # noqa: PLR0915
         scale_units="xy",
         scale=2,
         width=0.005,
-        norm=Normalize(vmin=function_data.y.min(), vmax=function_data.y.max()),
+        norm=Normalize(vmin=vmin, vmax=vmax),
         zorder=10,
     )
 
@@ -372,6 +391,8 @@ def main() -> None:  # noqa: PLR0915
         grid_mean,
         extent=grid_extent,
         origin="lower",
+        vmin=vmin,
+        vmax=vmax,
     )
     ax[1, 0].plot(*test_set.X.T, ls="--", marker="", color="w", alpha=0.5, zorder=5)
     ax[1, 0].scatter(
@@ -379,8 +400,8 @@ def main() -> None:  # noqa: PLR0915
         s=18,
         c=training_set.f.ravel(),
         cmap=plt.cm.viridis,
-        vmin=function_data.y.min(),
-        vmax=function_data.y.max(),
+        vmin=vmin,
+        vmax=vmax,
         edgecolors="w",
         linewidths=0.5,
         alpha=1,
