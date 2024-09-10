@@ -10,8 +10,8 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 from matplotlib import colors
 
-from dgp import _default_jitter
 from dgp.kernels import cov_matrix, eq
+from dgp.settings import _default_jitter
 
 from IPython import embed  # noqa
 
