@@ -3,7 +3,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Scalar
 
 
 def cov_matrix(
@@ -11,17 +11,16 @@ def cov_matrix(
 ) -> Float[Array, "N M"]:
     "Compute a dense covariance matrix from a kernel function and arrays of inputs."
 
-    K = jax.vmap(lambda x: jax.vmap(lambda y: kernel(x, y))(y))(x)
+    K = jax.vmap(lambda xi: jax.vmap(lambda yi: kernel(xi, yi))(y))(x)
 
     return K
 
 
-def eq(lengthscale: Float[Array, "D"], variance: float) -> Callable:
+def eq(lengthscale: Float[Array, "D"], variance: Scalar | float) -> Callable:
     "The exponentiated quadratic covariance function."
 
-    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
-        X = (x - y) / lengthscale
-        return variance * jnp.exp(-0.5 * X.dot(X))
+    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Scalar:
+        return variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
 
     return k
 
@@ -74,7 +73,7 @@ def derivative_cov_func(kernel: Callable) -> CovMatrix:
     #         len(f.shape) == 1, lambda x: jnp.atleast_2d(x).T, lambda x: x, f
     #     )
 
-    def A(dx: Float[Array, "N D"], dy: Float[Array, "N D"]) -> Float[Array, "N N"]:
+    def A(dx: Float[Array, "N D"], dy: Float[Array, "N D"]) -> Float[Array, "D*N D*N"]:
         batched_matrix = d2kdxdy_cov(dx, dy)
         matrix = jnp.concatenate(jnp.concatenate(batched_matrix, axis=1), axis=1)
         return matrix
@@ -88,8 +87,8 @@ def derivative_cov_func(kernel: Callable) -> CovMatrix:
         out_axes=2,
     )
 
-    def B(dx: Float[Array, "N D"], y: Float[Array, "M 1"]) -> Float[Array, "N M"]:
-        batched_matrix = -ddx_cov(dx, y)
+    def B(dx: Float[Array, "N D"], y: Float[Array, "M D"]) -> Float[Array, "D*N M"]:
+        batched_matrix = ddx_cov(dx, y)
         matrix = jnp.concatenate(batched_matrix, axis=0)
         return matrix
 
@@ -102,15 +101,15 @@ def derivative_cov_func(kernel: Callable) -> CovMatrix:
         out_axes=0,
     )
 
-    def C(x: Float[Array, "M 1"], dy: Float[Array, "N D"]) -> Float[Array, "M N"]:
-        batched_matrix = -ddy_cov(x, dy)
+    def C(x: Float[Array, "M D"], dy: Float[Array, "N D"]) -> Float[Array, "M D*N"]:
+        batched_matrix = ddy_cov(x, dy)
         matrix = jnp.concatenate(batched_matrix, axis=1)
         return matrix
 
     # ===== Constructing the covariance function for D =====
     # This is just the covariance function itself.
 
-    def D(x: Float[Array, "M 1"], y: Float[Array, "M 1"]) -> Float[Array, "M M"]:
+    def D(x: Float[Array, "M D"], y: Float[Array, "M D"]) -> Float[Array, "M M"]:
         return cov_matrix(kernel, x, y)
 
     return CovMatrix(A, B, C, D)
