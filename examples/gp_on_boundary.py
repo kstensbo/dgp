@@ -240,8 +240,8 @@ def optimise_hyperparameters(
         "logp": [],
     }
     pbar = tqdm.tqdm(range(num_epochs), desc="Epoch")
-    for epoch in pbar:
-        try:
+    try:
+        for epoch in pbar:
             params, opt_state, neg_logp = step_fn(params, opt_state, data.X, data.y)
 
             logger["epoch"].append(epoch)
@@ -249,8 +249,8 @@ def optimise_hyperparameters(
 
             pbar.set_description(f"Epoch: {epoch}, log marginal: {-neg_logp:g}")
 
-        except KeyboardInterrupt:
-            break
+    except KeyboardInterrupt:
+        print("Training interrupted.")
 
     return params, logger
 
