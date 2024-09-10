@@ -5,6 +5,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import numpy as np
 import optax
 import tqdm
 from jax import random
@@ -342,8 +343,8 @@ def main() -> None:  # noqa: PLR0915
     )
 
     grid_extent = [x_array[0], x_array[-1], y_array[0], y_array[-1]]
-    vmin = jnp.min(jnp.array([function_data.y.min(), grid_mean.min()]))
-    vmax = jnp.max(jnp.array([function_data.y.max(), grid_mean.max()]))
+    vmin = np.min(jnp.array([function_data.y.min(), grid_mean.min()]))
+    vmax = np.max(jnp.array([function_data.y.max(), grid_mean.max()]))
 
     true_c = ax[0, 0].imshow(
         function_data.y,
