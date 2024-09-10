@@ -5,24 +5,24 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.typing import ArrayLike
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Scalar
 
-from dgp import _default_jitter
 from dgp.kernels import CovMatrix, derivative_cov_func
+from dgp.settings import _default_jitter
 
 
 class GP(NamedTuple):
     kernel: Callable
-    X: Float[Array, "N D"]
-    y: Float[Array, "N"]
+    X: Float[Array, "N Dx"]
+    y: Float[Array, "N Dy"]
     L: Float[Array, "N N"]
     alpha: Float[Array, "N 1"]
     cov_matrices: CovMatrix
 
 
 def fit(
-    X: Float[Array, "N D"],
-    y: Float[Array, "N"],
+    X: Float[Array, "N Dx"],
+    y: Float[Array, "N Dy"],
     kernel: Callable,
     _jitter: float = _default_jitter,
 ) -> GP:
@@ -39,7 +39,7 @@ def fit(
 
 def predict(
     X: Float[Array, "N D"], gp: GP
-) -> tuple[Float[Array, "N"], Float[Array, "N"]]:
+) -> tuple[Float[Array, "N 1"], Float[Array, "N N"]]:
     "Compute predictive mean and covariance at locations X."
     k = gp.cov_matrices.B(gp.X, X)
 
@@ -50,7 +50,7 @@ def predict(
     return f_pred, covar
 
 
-def logp(gp: GP) -> float:
+def logp(gp: GP) -> Scalar:
     "Compute the log-marginal likelihood."
     return (
         -0.5 * jnp.dot(gp.y.ravel(), gp.alpha.ravel())
