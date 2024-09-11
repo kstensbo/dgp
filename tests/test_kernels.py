@@ -76,18 +76,57 @@ class TestEQDerivative:
         assert jnp.allclose(output, expected_output)
 
 
-def test_div_free() -> None:
-    # Define test points
+def diag_div_free_kernel(
+    lengthscale: Float[Array, "D"], variance: Scalar | float
+) -> Callable:
+    "The special case of a diagonal divergence-free kernel based on the EQ kernel."
+
+    k_eq = kernels.eq(lengthscale, variance)
+
+    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
+        # (x - y) / l: [D, 1]
+        scaled_diff = ((x - y) / lengthscale)[:, None]
+        factor = (2 - jnp.sum(scaled_diff**2)) / (lengthscale**2) * jnp.eye(
+            len(x)
+        ) + scaled_diff @ scaled_diff.T / (lengthscale**2)
+
+        return factor * k_eq(x, y)
+
+    return k
+
+
+class TestDiagDivFreeKernel:
     x = jnp.ones(3, dtype=float)
     y = jnp.zeros(3, dtype=float)
+    lengthscale = jnp.ones(3, dtype=float)
+    k_eq = staticmethod(kernels.eq(lengthscale, 1.0))
 
-    # Use an exponentiated quadratic covariance function as base kernel:
-    k_eq = kernels.eq(jnp.ones(3, dtype=float), 1.0)
+    def test_output_shape(self) -> None:
+        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        assert k(self.x, self.y).shape == (3, 3)
 
-    # Construct divergence-free covariance function:
-    k_df = kernels.div_free(k_eq)
+    def test_outer_product(self) -> None:
+        scaled_diff = jnp.atleast_2d((self.x - self.y) / self.lengthscale).T
+        assert jnp.allclose(scaled_diff @ scaled_diff.T, jnp.ones((3, 3), dtype=float))
 
-    # Compute covariance between function values:
-    kxy = k_df(x, y)
+    def test_simple_input(self) -> None:
+        term1 = (2 - 3) * jnp.eye(3)
+        term2 = jnp.ones((3, 3), dtype=float)
 
-    assert kxy.shape == (3, 3)
+        expected_output = (term1 + term2) * self.k_eq(self.x, self.y)
+
+        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        output = k(self.x, self.y)
+
+        assert jnp.allclose(output, expected_output)
+
+
+class TestDivFreeKernel:
+    x = jnp.ones(3, dtype=float)
+    y = jnp.zeros(3, dtype=float)
+    lengthscale = jnp.ones(3, dtype=float)
+    k_eq = staticmethod(kernels.eq(lengthscale, 1.0))
+
+    def test_output_shape(self) -> None:
+        k = kernels.div_free(self.k_eq)
+        assert k(self.x, self.y).shape == (3, 3)
