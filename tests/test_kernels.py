@@ -130,3 +130,32 @@ class TestDivFreeKernel:
     def test_output_shape(self) -> None:
         k = kernels.div_free(self.k_eq)
         assert k(self.x, self.y).shape == (3, 3)
+
+    def test_for_eq_base_kernel(self) -> None:
+        # For the EQ kernel, the output can be computed using the derivative defined
+        # above.
+
+        k_df = kernels.div_free(self.k_eq)
+        output = k_df(self.x, self.y)
+
+        # List of non-zero Levi-Civita symbols:
+        nonzero_levi_civita_symbols = [
+            (1, 2, 3),
+            (2, 3, 1),
+            (3, 1, 2),
+            (3, 2, 1),
+            (1, 3, 2),
+            (2, 1, 3),
+        ]
+
+        expected_output = jnp.zeros((3, 3), dtype=float)
+        for i, k, l in nonzero_levi_civita_symbols:  # noqa: E741
+            for j, m, n in nonzero_levi_civita_symbols:
+                dk = eq_deriv(self.lengthscale, 1.0, k, m)
+                expected_output += (
+                    kernels.levi_civita(i, k, l)
+                    * kernels.levi_civita(j, m, n)
+                    * dk(self.x, self.y)
+                )
+
+        assert jnp.allclose(output, expected_output)
