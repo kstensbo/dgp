@@ -35,6 +35,59 @@ def ess(lengthscale: Float[Array, "D"], variance: float, period: float) -> Calla
     return k
 
 
+def levi_civita(i: int, j: int, k: int) -> int:
+    "Computes the Levi-Civita symbol for a 3D tensor."
+    if (i, j, k) in [(1, 2, 3), (2, 3, 1), (3, 1, 2)]:
+        symbol = 1
+    elif (i, j, k) in [(3, 2, 1), (1, 3, 2), (2, 1, 3)]:
+        symbol = -1
+    else:
+        symbol = 0
+
+    return symbol
+
+
+def div_free(base_kernel: Callable) -> Callable:
+    """
+    Defines a divergence-free kernel. Assumes the same base kernel for all elements in
+    the matrix-valued kernel.
+    """
+
+    # List of non-zero Levi-Civita symbols:
+    nonzero_levi_civita_symbols = [
+        (1, 2, 3),
+        (2, 3, 1),
+        (3, 1, 2),
+        (3, 2, 1),
+        (1, 3, 2),
+        (2, 1, 3),
+    ]
+
+    # This derivative function outputs a [D, D] matrix for a pair of inputs:
+    d2kdxdy = jax.jacfwd(jax.jacrev(base_kernel, argnums=0), argnums=1)
+
+    # vmap over each input to the covariance function in turn. We want each argument to
+    # keep their mutual order in the resulting matrix, hence the out_axes
+    # specifications:
+    # d2kdxdy_cov = jax.vmap(
+    #     jax.vmap(d2kdxdy, in_axes=(0, None), out_axes=0),
+    #     in_axes=(None, 0),
+    #     out_axes=1,
+    # )
+
+    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
+        K = jnp.zeros(3, dtype=float)
+        for i, k, l in nonzero_levi_civita_symbols:  # noqa: E741
+            for j, m, n in nonzero_levi_civita_symbols:
+                K += (
+                    levi_civita(i, k, l) * levi_civita(j, m, n) * d2kdxdy(x, y)
+                )  # [l, n]
+
+        return K
+
+    return k
+
+
 class CovMatrix(NamedTuple):
     A: Callable
     B: Callable
