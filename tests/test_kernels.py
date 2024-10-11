@@ -1,10 +1,13 @@
 from collections.abc import Callable
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+from jax import random
 from jaxtyping import Array, Float, Scalar
 
 from dgp import kernels
+from dgp.settings import _default_jitter
 
 from IPython import embed  # noqa: F401
 
@@ -156,6 +159,119 @@ class TestDiagDivFreeKernel:
         output = k(self.x, self.y)
 
         assert jnp.allclose(output, expected_output)
+
+    def test_vector_notation(self) -> None:
+        def scalar_diag_div_free_kernel(
+            x: Float[Array, "D"], y: Float[Array, "D"], i: int, j: int
+        ) -> float:
+            delta = 1 if i == j else 0
+
+            lm2 = 1 / self.lengthscale[0] ** 2
+
+            factor = (
+                lm2
+                * (
+                    2 * delta
+                    - lm2 * delta * (jnp.sum((x - y) ** 2))
+                    + lm2 * (x[i] - y[i]) * (x[j] - y[j])
+                )
+            ).squeeze()
+
+            return factor * self.k_eq(x, y)
+
+        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        output = k(self.x, self.y)
+
+        for i in range(3):
+            for j in range(3):
+                expected = scalar_diag_div_free_kernel(self.x, self.y, i, j)
+
+                assert output[i, j] == expected
+
+    def test_grid_reconstruction(self) -> None:
+        # Set up toy dataset:
+        x_array = jnp.linspace(0, 1, 10)
+        y_array = jnp.linspace(0, 1, 10)
+        z_array = jnp.linspace(0, 1, 10)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array)
+
+        assert xx.shape == (10, 10, 10)
+
+        # Construct input coordinates for grid, shape [N, 3]:
+        X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
+
+        f = X.reshape((10, 10, 10, 3))
+
+        assert jnp.all(f[..., 0] == xx)
+        assert jnp.all(f[..., 1] == yy)
+        assert jnp.all(f[..., 2] == zz)
+
+    def test_zero_divergence(self) -> None:
+        "Test that samples from the diagonal kernel have zero divergence"
+
+        key = random.PRNGKey(seed=0)
+
+        k = diag_div_free_kernel(self.lengthscale, 1.0)
+
+        # Set up toy dataset:
+        x_array = jnp.linspace(0, 1, 10)
+        y_array = jnp.linspace(0, 1, 10)
+        z_array = jnp.linspace(0, 1, 10)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array)
+
+        # Construct input coordinates for grid, shape [N, 3]:
+        X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
+
+        # vmap over each input to the covariance function in turn. We want each argument
+        # to keep their mutual order in the resulting matrix, hence the out_axes
+        # specifications:
+        cov = jax.vmap(
+            jax.vmap(k, in_axes=(0, None), out_axes=0),
+            in_axes=(None, 0),
+            out_axes=1,
+        )
+        K = kernels.tensor_to_matrix(cov(X, X))
+        assert K.shape == (3 * 1000, 3 * 1000)
+
+        isnan = True
+        scaling = 1
+        while isnan:
+            L = jnp.linalg.cholesky(K + scaling * _default_jitter * jnp.eye(K.shape[0]))
+            isnan = jnp.any(jnp.isnan(L))
+            if isnan:
+                scaling *= 10
+
+        # print(scaling)
+        assert not jnp.any(jnp.isnan(L))
+
+        # Sample noise:
+        u = random.normal(key, shape=[K.shape[0], 1])
+
+        # Transform noise to GP prior sample:
+        f = L @ u
+
+        assert f.shape == (3 * 1000, 1)
+
+        f = f.reshape(-1, 3)
+        assert f.shape == (1000, 3)
+        f = f.reshape(x_array.shape[0], y_array.shape[0], z_array.shape[0], 3)
+
+        # Function derivative:
+        # dfdx, dfdy, dfdz = jnp.gradient(f_grid)
+        dx = x_array[1] - x_array[0]
+        dy = y_array[1] - y_array[0]
+        dz = z_array[1] - z_array[0]
+
+        dfdx = jnp.gradient(f[..., 0], dx, axis=0)  # [N, N, N]
+        dfdy = jnp.gradient(f[..., 1], dy, axis=1)  # [N, N, N]
+        dfdz = jnp.gradient(f[..., 2], dz, axis=2)  # [N, N, N]
+
+        # df_grid = jnp.dstack((dfdx, dfdy, dfdz)).reshape(-1, 3)
+        divergence = jnp.ravel(dfdx + dfdy + dfdz)
+
+        assert jnp.allclose(divergence, jnp.zeros_like(divergence))
 
 
 class TestDivFreeKernel:
