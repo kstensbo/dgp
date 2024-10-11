@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Float, Scalar
 
 from dgp import kernels
@@ -86,13 +87,49 @@ def diag_div_free_kernel(
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
         # (x - y) / l: [D, 1]
         scaled_diff = ((x - y) / lengthscale)[:, None]
-        factor = (2 - jnp.sum(scaled_diff**2)) / (lengthscale**2) * jnp.eye(
+        factor = (2 - jnp.sum(scaled_diff**2)) * jnp.eye(
             len(x)
-        ) + scaled_diff @ scaled_diff.T / (lengthscale**2)
+        ) + scaled_diff @ scaled_diff.T
 
-        return factor * k_eq(x, y)
+        return factor * k_eq(x, y) / (lengthscale**2)
 
     return k
+
+
+class TestMultiOutputKernel:
+    "Various tests to verify transformations to multi-output covariance matrices."
+
+    def test_construction(self) -> None:
+        "Test construction of [D*N, D*N] matrix from [N, N, D, D] tensor."
+        N = 2
+        D = 3
+        inner_cov = np.arange(D * D).reshape(D, D)
+        full_cov = np.tile(inner_cov, (N, N, 1, 1))
+
+        assert full_cov.shape == (N, N, D, D)
+
+        tiled_cov = np.transpose(full_cov, (0, 2, 1, 3))
+        # tiled_cov = np.transpose(full_cov, (2, 3, 0, 1))
+        # tiled_cov = np.transpose(full_cov.reshape((N, N, D * D)), (2, 0, 1))
+        tiled_cov = tiled_cov.reshape((D * N, D * N))
+        # print(tiled_cov)
+
+        assert np.all(tiled_cov[:D, :D] == inner_cov)
+        assert np.all(tiled_cov[D : 2 * D, :D] == inner_cov)
+        assert np.all(tiled_cov[:D, D : 2 * D] == inner_cov)
+        assert np.all(tiled_cov[D : 2 * D, D : 2 * D] == inner_cov)
+
+    def test_convenience_function(self) -> None:
+        N = 2
+        D = 3
+        inner_cov = np.arange(D * D).reshape(D, D)
+        full_cov = np.tile(inner_cov, (N, N, 1, 1))
+
+        tiled_cov = np.transpose(full_cov, (0, 2, 1, 3))
+        expected_output = tiled_cov.reshape((D * N, D * N))
+
+        output = kernels.tensor_to_matrix(jnp.array(full_cov, dtype=float))
+        assert np.all(output == expected_output)
 
 
 class TestDiagDivFreeKernel:

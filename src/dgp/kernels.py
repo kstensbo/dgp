@@ -16,6 +16,12 @@ def cov_matrix(
     return K
 
 
+def tensor_to_matrix(tensor: Float[Array, "N M P Q"]) -> Float[Array, "N*P M*Q"]:
+    "Take an [N, M, P, Q] tensor and transform it into an [N*P, M*Q] tiled matrix."
+    N, M, P, Q = tensor.shape
+    return jnp.transpose(tensor, axes=(0, 2, 1, 3)).reshape((N * P, M * Q))
+
+
 def eq(lengthscale: Float[Array, "D"], variance: Scalar | float) -> Callable:
     "The exponentiated quadratic covariance function."
 
