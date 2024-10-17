@@ -492,7 +492,7 @@ class TestDiagDivFreeKernel:
 
         # df_grid = jnp.dstack((dfdx, dfdy, dfdz)).reshape(-1, 3)
         # div = dfdx + dfdy + dfdz
-        #
+        # #
         # import matplotlib.pyplot as plt
         #
         # num_rows = int(np.ceil(np.sqrt(Nz)))
@@ -504,8 +504,8 @@ class TestDiagDivFreeKernel:
         #     figsize=(12, 8),
         #     squeeze=False,
         # )
-        # dx = 1 / Nx / 2
-        # dy = 1 / Ny / 2
+        # dx = (x_array[-1] - x_array[0]) / Nx / 2
+        # dy = (y_array[-1] - y_array[0]) / Ny / 2
         #
         # for i in range(num_rows):
         #     for j in range(num_cols):
@@ -514,7 +514,12 @@ class TestDiagDivFreeKernel:
         #         else:
         #             ax[i, j].imshow(
         #                 div[..., i * num_cols + j],
-        #                 extent=[0 - dx, 1 + dx, 0 - dy, 1 + dy],
+        #                 extent=[
+        #                     x_array[0] - dx,
+        #                     x_array[-1] + dx,
+        #                     y_array[0] - dy,
+        #                     y_array[-1] + dy,
+        #                 ],
         #                 origin="lower",
         #             )
         #             ax[i, j].quiver(
@@ -527,10 +532,23 @@ class TestDiagDivFreeKernel:
         #             ax[i, j].set_title(f"z={i * num_cols + j}")
         # plt.show()
 
-        divergence = jnp.ravel(dfdx + dfdy + dfdz)
-        print(divergence.min(), divergence.mean())
+        # divergence = jnp.ravel(dfdx + dfdy + dfdz)
+        divergence = dfdx + dfdy + dfdz
 
-        assert jnp.allclose(divergence, jnp.zeros_like(divergence))
+        # For comparison to zero, ignore the box edges as the errors will be much larger
+        # here.
+        # embed()
+        inner_divergence = jnp.ravel(divergence[1:-1, 1:-1, 1:-1])
+
+        # The array of zeros should be the first argument to make the relative tolerance
+        # actually do something.
+        # The value of atol matches the expected error:
+        # https://numpy.org/doc/2.0/reference/generated/numpy.gradient.html
+        assert jnp.allclose(
+            jnp.zeros_like(inner_divergence),
+            inner_divergence,
+            atol=dx**2 + dy**2 + dz**2,
+        )
 
 
 class TestDivFreeKernel:
