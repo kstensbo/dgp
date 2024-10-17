@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, Scalar
 from dgp import kernels
 from dgp.settings import _default_jitter
 
-from IPython import embed  # noqa: F401
+from IPython import embed
 
 jax.config.update("jax_enable_x64", True)
 
@@ -31,7 +31,7 @@ def eq_deriv(
 
 
 def diag_div_free_kernel(
-    lengthscale: Float[Array, "D"], variance: Scalar | float
+    lengthscale: Float[Array, "D"], variance: Scalar | float, dimension: int
 ) -> Callable:
     "The special case of a diagonal divergence-free kernel based on the EQ kernel."
 
@@ -40,13 +40,15 @@ def diag_div_free_kernel(
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
         # (x - y) / l: [D, 1]
         scaled_diff = ((x - y) / lengthscale)[:, None]
-        factor = (2 - jnp.sum(scaled_diff**2)) * jnp.eye(
+        factor = (dimension - 1 - jnp.sum(scaled_diff**2)) * jnp.eye(
             len(x)
         ) + scaled_diff @ scaled_diff.T
 
+        factor /= lengthscale**2
+
         assert factor.shape == (len(x), len(x))
 
-        return factor * k_eq(x, y) / (lengthscale**2)
+        return factor * k_eq(x, y)
 
     return k
 
@@ -345,7 +347,7 @@ class TestDiagDivFreeKernel:
     k_eq = staticmethod(kernels.eq(lengthscale, 1.0))
 
     def test_output_shape(self) -> None:
-        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        k = diag_div_free_kernel(self.lengthscale, 1.0, 3)
         assert k(self.x, self.y).shape == (3, 3)
 
     def test_outer_product(self) -> None:
@@ -358,7 +360,7 @@ class TestDiagDivFreeKernel:
 
         expected_output = (term1 + term2) * self.k_eq(self.x, self.y)
 
-        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        k = diag_div_free_kernel(self.lengthscale, 1.0, 3)
         output = k(self.x, self.y)
 
         assert jnp.allclose(output, expected_output)
@@ -387,7 +389,7 @@ class TestDiagDivFreeKernel:
 
             return factor * self.k_eq(x, y)
 
-        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        k = diag_div_free_kernel(self.lengthscale, 1.0, 3)
         output = k(self.x, self.y)
 
         for i in range(3):
@@ -416,12 +418,123 @@ class TestDiagDivFreeKernel:
         assert jnp.all(f[..., 1] == yy)
         assert jnp.all(f[..., 2] == zz)
 
-    def test_zero_divergence(self) -> None:
+    def test_zero_divergence_2d(self) -> None:
         "Test that samples from the diagonal kernel have zero divergence."
 
         key = random.PRNGKey(seed=0)
 
-        k = diag_div_free_kernel(self.lengthscale, 1.0)
+        k = diag_div_free_kernel(jnp.ones(2, dtype=float), 1.0, 3)
+
+        Nx = 50
+        Ny = 50
+        M = Nx * Ny
+
+        # Set up toy dataset:
+        x_array = jnp.linspace(0, 1, Nx)
+        y_array = jnp.linspace(0, 1, Ny)
+
+        xx, yy = jnp.meshgrid(x_array, y_array, indexing="ij")
+
+        # Construct input coordinates for grid, shape [M, 2]:
+        X = jnp.stack([xx, yy], axis=-1).reshape(-1, 2)
+        assert X.shape == (M, 2)
+        embed()
+
+        # vmap over each input to the covariance function in turn. We want each argument
+        # to keep their mutual order in the resulting matrix, hence the out_axes
+        # specifications:
+        cov = jax.vmap(
+            jax.vmap(k, in_axes=(0, None), out_axes=0),
+            in_axes=(None, 0),
+            out_axes=1,
+        )
+
+        C = cov(X, X)
+        assert C.shape == (M, M, 2, 2)
+
+        K = kernels.tensor_to_matrix(C)
+
+        isnan = True
+        scaling = 1
+        while isnan:
+            L = jnp.linalg.cholesky(K + scaling * _default_jitter * jnp.eye(K.shape[0]))
+            isnan = jnp.any(jnp.isnan(L))
+            if isnan:
+                scaling *= 10
+
+        assert not jnp.any(jnp.isnan(L))
+
+        # Sample noise:
+        u = random.normal(key, shape=[K.shape[0], 1])
+
+        # Transform noise to GP prior samples of the vector field:
+        f = L @ u
+
+        assert f.shape == (2 * M, 1)
+
+        f_grid = f.squeeze().reshape(M, 2)
+        f_grid_2d = f_grid.reshape(Nx, Ny, 2)
+        f2d = f_grid_2d
+
+        # Function derivative:
+        dx = x_array[1] - x_array[0]
+        dy = y_array[1] - y_array[0]
+
+        dfdx = np.gradient(f2d[..., 0], dx, axis=0)  # [N, N]
+        dfdy = np.gradient(f2d[..., 1], dy, axis=1)  # [N, N]
+
+        # # ======================== Visual inspection =============================
+        # div = dfdx + dfdy
+        # import matplotlib.pyplot as plt
+        #
+        # fig, ax = plt.subplots()
+        # dx = (x_array[-1] - x_array[0]) / Nx / 2
+        # dy = (y_array[-1] - y_array[0]) / Ny / 2
+        #
+        # c = ax.imshow(
+        #     div,
+        #     extent=[
+        #         x_array[0] - dx,
+        #         x_array[-1] + dx,
+        #         y_array[0] - dy,
+        #         y_array[-1] + dy,
+        #     ],
+        #     origin="lower",
+        # )
+        # ax.quiver(
+        #     xx,
+        #     yy,
+        #     f2d[..., 0],
+        #     f2d[..., 1],
+        #     angles="xy",
+        # )
+        # plt.colorbar(c)
+        # plt.show()
+        # # ========================================================================
+
+        divergence = dfdx + dfdy
+
+        # For comparison to zero, ignore the box edges as the errors will be much larger
+        # here.
+        # embed()
+        inner_divergence = jnp.ravel(divergence[1:-1, 1:-1])
+
+        # The array of zeros should be the first argument to make the relative tolerance
+        # actually do something.
+        # The value of atol matches the expected error:
+        # https://numpy.org/doc/2.0/reference/generated/numpy.gradient.html
+        assert jnp.allclose(
+            jnp.zeros_like(inner_divergence),
+            inner_divergence,
+            atol=dx**2 + dy**2,
+        )
+
+    def test_zero_divergence_3d(self) -> None:
+        "Test that samples from the diagonal kernel have zero divergence."
+
+        key = random.PRNGKey(seed=0)
+
+        k = diag_div_free_kernel(self.lengthscale, 1.0, 3)
 
         Nx = 10
         Ny = 10
@@ -435,7 +548,7 @@ class TestDiagDivFreeKernel:
 
         xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
 
-        # Construct input coordinates for grid, shape [N, 3]:
+        # Construct input coordinates for grid, shape [M, 3]:
         X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
         assert X.shape == (M, 3)
 
