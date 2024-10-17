@@ -146,12 +146,13 @@ class TestMultiOutputKernel:
 
 class TestGridConstruction:
     def test_grid_construction(self) -> None:
+        "Test that we understand the structure of the constructed grid."
         N = 5
 
         x_array = np.arange(N)
         y_array = np.arange(N)
         z_array = np.arange(N)
-        xx, yy, zz = np.meshgrid(x_array, y_array, z_array)
+        xx, yy, zz = np.meshgrid(x_array, y_array, z_array, indexing="ij")
 
         grid = np.stack([xx, yy, zz], axis=-1)
         X = grid.reshape(-1, 3)
@@ -162,35 +163,30 @@ class TestGridConstruction:
         assert np.all(X[:N, 1] == np.zeros(N))
         assert np.all(X[:N, 2] == np.arange(N))
 
-        # The following is not what I'd expect: the list starts by incrementing the last
-        # index (as expected), but then increments the first index (unexpedted), and
-        # only after that the second index.
-        assert np.all(X[N : 2 * N, 0] == np.ones(N))
-        assert np.all(X[N : 2 * N, 1] == np.zeros(N))
-        assert np.all(X[N : 2 * N, 2] == np.arange(N))
-
-        # This is what you'd expect, and what we get by the following grid construction:
-        # grid = np.stack([yy, xx, zz], axis=-1)
-        # X = grid.reshape(-1, 3)
-        # assert np.all(X[N : 2 * N, 0] == np.zeros(N))
-        # assert np.all(X[N : 2 * N, 1] == np.ones(N))
+        # The following assumes `indexing="xy"`:
+        # assert np.all(X[N : 2 * N, 0] == np.ones(N))
+        # assert np.all(X[N : 2 * N, 1] == np.zeros(N))
         # assert np.all(X[N : 2 * N, 2] == np.arange(N))
 
+        # The following assumes `indexing="ij"`:
+        assert np.all(X[N : 2 * N, 0] == np.zeros(N))
+        assert np.all(X[N : 2 * N, 1] == np.ones(N))
+        assert np.all(X[N : 2 * N, 2] == np.arange(N))
+
     def test_order_of_sampled_function_compared_to_the_original_X(self) -> None:
+        """
+        Test that going from a covariance tensor of shape (M, M, D, D) to a (D*M, D*M)
+        matrix preserves the order of the original list of grid points, such that the
+        grid can be reconstructed correctly.
+        """
+
         def f(x: Float[Array, "D 1"], y: Float[Array, "D 1"]) -> Float[Array, "D D"]:
             """
             Toy covariance function which results in the overall multi-output covariance
             function being the flattened grid coordinates both at the top row and the
             left column.
             """
-            # Example implementation - replace with your actual covariance function
-            # return np.array(
-            #     [[np.dot(x, y), 0, 0], [0, np.dot(x, y), 0], [0, 0, np.dot(x, y)]]
-            # )
 
-            # K = jnp.zeros((3, 3))
-            # K = K.at[:, 0].set(jnp.where(np.all(x == np.zeros(3)), y, np.zeros(3)))
-            #
             # Repeat x along columns, such that x = [x1, x2, x3] will be one column.
             Kx = jnp.stack([x, x, x], axis=1)
 
@@ -246,18 +242,9 @@ class TestGridConstruction:
         constructed from the convenience function can be transformed back to a grid
         correctly.
         """
-        # N = 2
-        # D = 3
-        # inner_cov = np.arange(D * D).reshape(D, D)
-        # full_cov = np.tile(inner_cov, (N, N, 1, 1))
-        #
-        # # [N, N, D, D] -> [D*N, D*N]
-        # K = kernels.tensor_to_matrix(jnp.array(full_cov, dtype=float))
 
         N = 5
         M = N**3
-        # base_vec = np.zeros(M)
-        # vec = np.stack([base_vec, base_vec + 1, base_vec + 2], axis=0).reshape(-1, 1)
 
         # The multi-output covariance matrix is constructed by tiling the matrix-valued
         # covariances for each input. This following simulates the vector
@@ -274,7 +261,6 @@ class TestGridConstruction:
         vec = np.concatenate([np.arange(3, dtype=int) + n for n in range(M)], axis=0)
         assert vec.shape == (3 * M,)
 
-        # embed()
         # v1 = vec.reshape(-1, 3)
         # v1 = np.stack([vec[d * M : (d + 1) * M] for d in range(3)], axis=1).squeeze()
         v1 = np.stack([vec[3 * m : 3 * (m + 1)] for m in range(M)], axis=0).squeeze()
@@ -378,6 +364,11 @@ class TestDiagDivFreeKernel:
         assert jnp.allclose(output, expected_output)
 
     def test_vector_notation(self) -> None:
+        """
+        Test that the vector notation version of the kernel gives the same result as the
+        scalar notation version.
+        """
+
         def scalar_diag_div_free_kernel(
             x: Float[Array, "D"], y: Float[Array, "D"], i: int, j: int
         ) -> float:
@@ -406,6 +397,7 @@ class TestDiagDivFreeKernel:
                 assert output[i, j] == expected
 
     def test_grid_reconstruction(self) -> None:
+        "Test that the grid can be flattened and reconstructed correctly."
         # Set up toy dataset:
         x_array = jnp.linspace(0, 1, 10)
         y_array = jnp.linspace(0, 1, 10)
@@ -425,7 +417,7 @@ class TestDiagDivFreeKernel:
         assert jnp.all(f[..., 2] == zz)
 
     def test_zero_divergence(self) -> None:
-        "Test that samples from the diagonal kernel have zero divergence"
+        "Test that samples from the diagonal kernel have zero divergence."
 
         key = random.PRNGKey(seed=0)
 
@@ -435,13 +427,13 @@ class TestDiagDivFreeKernel:
         Ny = 10
         Nz = 4
         M = Nx * Ny * Nz
+
         # Set up toy dataset:
         x_array = jnp.linspace(0, 1, Nx)
         y_array = jnp.linspace(0, 1, Ny)
         z_array = jnp.linspace(0, 0.1 * Nz, Nz)
 
         xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
-        # yy, xx, zz = jnp.meshgrid(x_array, y_array, z_array)
 
         # Construct input coordinates for grid, shape [N, 3]:
         X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
@@ -466,31 +458,15 @@ class TestDiagDivFreeKernel:
         assert jnp.all(K[3:6, 0:3] == C[1, 0])
         assert jnp.all(K[3:6, 3:6] == C[1, 1])
         assert jnp.all(K[3:6, :3] == K[:3, 3:6])
-        # for i in range(M):
-        #     for j in range(M):
-        #         assert jnp.all(
-        #             K[3 * i : 3 * (i + 1), 3 * j : 3 * (j + 1)]
-        #             == K[3 * j : 3 * (j + 1), 3 * i : 3 * (i + 1)]
-        #         )
-
-        #      [ [X,X], [X, Y], [X, Z]]
-        # K2 = [ [Y,X], [Y, Y], [Y, Z]]
-        #      [ [Z,X], [Z, Y], [Z, Z]]
-        # K2 = C.transpose(2, 0, 3, 1).reshape(3 * M, 3 * M)
-        # K = C.reshape(3 * M, 3 * M)
 
         isnan = True
         scaling = 1
         while isnan:
             L = jnp.linalg.cholesky(K + scaling * _default_jitter * jnp.eye(K.shape[0]))
-            # L = jnp.linalg.cholesky(
-            #     K2 + scaling * _default_jitter * jnp.eye(K.shape[0])
-            # )
             isnan = jnp.any(jnp.isnan(L))
             if isnan:
                 scaling *= 10
 
-        # print(scaling)
         assert not jnp.any(jnp.isnan(L))
 
         # Sample noise:
@@ -501,19 +477,11 @@ class TestDiagDivFreeKernel:
 
         assert f.shape == (3 * M, 1)
 
-        # # f = f.reshape(-1, 3)
-        # f2 = np.stack([f[3 * m : 3 * (m + 1)] for m in range(M)], axis=0).squeeze()
-        # # f2 = np.stack([f[M * d : M * (d + 1)] for d in range(3)], axis=1).squeeze()
-        # assert f2.shape == (M, 3)
-        # f3 = f2.reshape(x_array.shape[0], y_array.shape[0], z_array.shape[0], 3)
-
         f_grid = f.squeeze().reshape(M, 3)
         f_grid_3d = f_grid.reshape(Nx, Ny, Nz, 3)
         f3 = f_grid_3d
-        # embed()
 
         # Function derivative:
-        # dfdx, dfdy, dfdz = jnp.gradient(f_grid)
         dx = x_array[1] - x_array[0]
         dy = y_array[1] - y_array[0]
         dz = z_array[1] - z_array[0]
