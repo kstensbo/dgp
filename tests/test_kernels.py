@@ -11,6 +11,8 @@ from dgp.settings import _default_jitter
 
 from IPython import embed  # noqa: F401
 
+jax.config.update("jax_enable_x64", True)
+
 
 def eq_deriv(
     lengthscale: Float[Array, "D"], variance: Scalar | float, i: int, j: int
@@ -24,6 +26,27 @@ def eq_deriv(
             lengthscale**2
         )
         return factor * variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
+
+    return k
+
+
+def diag_div_free_kernel(
+    lengthscale: Float[Array, "D"], variance: Scalar | float
+) -> Callable:
+    "The special case of a diagonal divergence-free kernel based on the EQ kernel."
+
+    k_eq = kernels.eq(lengthscale, variance)
+
+    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
+        # (x - y) / l: [D, 1]
+        scaled_diff = ((x - y) / lengthscale)[:, None]
+        factor = (2 - jnp.sum(scaled_diff**2)) * jnp.eye(
+            len(x)
+        ) + scaled_diff @ scaled_diff.T
+
+        assert factor.shape == (len(x), len(x))
+
+        return factor * k_eq(x, y) / (lengthscale**2)
 
     return k
 
@@ -80,25 +103,6 @@ class TestEQDerivative:
         assert jnp.allclose(output, expected_output)
 
 
-def diag_div_free_kernel(
-    lengthscale: Float[Array, "D"], variance: Scalar | float
-) -> Callable:
-    "The special case of a diagonal divergence-free kernel based on the EQ kernel."
-
-    k_eq = kernels.eq(lengthscale, variance)
-
-    def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
-        # (x - y) / l: [D, 1]
-        scaled_diff = ((x - y) / lengthscale)[:, None]
-        factor = (2 - jnp.sum(scaled_diff**2)) * jnp.eye(
-            len(x)
-        ) + scaled_diff @ scaled_diff.T
-
-        return factor * k_eq(x, y) / (lengthscale**2)
-
-    return k
-
-
 class TestMultiOutputKernel:
     "Various tests to verify transformations to multi-output covariance matrices."
 
@@ -123,6 +127,11 @@ class TestMultiOutputKernel:
         assert np.all(tiled_cov[D : 2 * D, D : 2 * D] == inner_cov)
 
     def test_convenience_function(self) -> None:
+        """
+        Test convenience function for converting [N, N, D, D] tensor to a tiled
+        [D*N, D*N] matrix.
+        """
+
         N = 2
         D = 3
         inner_cov = np.arange(D * D).reshape(D, D)
@@ -133,6 +142,214 @@ class TestMultiOutputKernel:
 
         output = kernels.tensor_to_matrix(jnp.array(full_cov, dtype=float))
         assert np.all(output == expected_output)
+
+
+class TestGridConstruction:
+    def test_grid_construction(self) -> None:
+        N = 5
+
+        x_array = np.arange(N)
+        y_array = np.arange(N)
+        z_array = np.arange(N)
+        xx, yy, zz = np.meshgrid(x_array, y_array, z_array)
+
+        grid = np.stack([xx, yy, zz], axis=-1)
+        X = grid.reshape(-1, 3)
+        X2 = np.stack([xx.flatten(), yy.flatten(), zz.flatten()], axis=1)
+        assert np.allclose(X, X2)
+
+        assert np.all(X[:N, 0] == np.zeros(N))
+        assert np.all(X[:N, 1] == np.zeros(N))
+        assert np.all(X[:N, 2] == np.arange(N))
+
+        # The following is not what I'd expect: the list starts by incrementing the last
+        # index (as expected), but then increments the first index (unexpedted), and
+        # only after that the second index.
+        assert np.all(X[N : 2 * N, 0] == np.ones(N))
+        assert np.all(X[N : 2 * N, 1] == np.zeros(N))
+        assert np.all(X[N : 2 * N, 2] == np.arange(N))
+
+        # This is what you'd expect, and what we get by the following grid construction:
+        # grid = np.stack([yy, xx, zz], axis=-1)
+        # X = grid.reshape(-1, 3)
+        # assert np.all(X[N : 2 * N, 0] == np.zeros(N))
+        # assert np.all(X[N : 2 * N, 1] == np.ones(N))
+        # assert np.all(X[N : 2 * N, 2] == np.arange(N))
+
+    def test_order_of_sampled_function_compared_to_the_original_X(self) -> None:
+        def f(x: Float[Array, "D 1"], y: Float[Array, "D 1"]) -> Float[Array, "D D"]:
+            """
+            Toy covariance function which results in the overall multi-output covariance
+            function being the flattened grid coordinates both at the top row and the
+            left column.
+            """
+            # Example implementation - replace with your actual covariance function
+            # return np.array(
+            #     [[np.dot(x, y), 0, 0], [0, np.dot(x, y), 0], [0, 0, np.dot(x, y)]]
+            # )
+
+            # K = jnp.zeros((3, 3))
+            # K = K.at[:, 0].set(jnp.where(np.all(x == np.zeros(3)), y, np.zeros(3)))
+            #
+            # Repeat x along columns, such that x = [x1, x2, x3] will be one column.
+            Kx = jnp.stack([x, x, x], axis=1)
+
+            # Repeat y along rows, such that y = [y1, y2, y3] will be one row.
+            Ky = jnp.stack([y, y, y], axis=0)
+
+            K = Kx + Ky
+
+            return K
+
+        N = 10
+        M = N**3
+        # Set up toy dataset:
+        x_array = jnp.arange(N)
+        y_array = jnp.arange(N)
+        z_array = jnp.arange(N)
+
+        xx, yy, zz = np.meshgrid(x_array, y_array, z_array)
+
+        # Create input coordinate grid
+        X = jnp.stack(
+            [xx.flatten(), yy.flatten(), zz.flatten()], axis=1
+        )  # Shape (M, 3)
+
+        # Compute covariance matrix
+        vf = jax.vmap(
+            jax.vmap(f, in_axes=(0, None), out_axes=0), in_axes=(None, 0), out_axes=1
+        )
+        K = vf(X, X)  # Shape (M, M, 3, 3)
+
+        assert K.shape == (M, M, 3, 3)
+
+        # Flatten the covariance matrix.
+        K_flat = kernels.tensor_to_matrix(K.astype(float))
+
+        # Pick the first column of K in a way that resembles the sampling. The first
+        # column should contain the coordinates in a flattened list.
+        pick_first_column = jnp.zeros((3 * M, 1), dtype=float)
+        pick_first_column = pick_first_column.at[0].set(1.0)
+        f_sampled = K_flat @ pick_first_column
+
+        # Reconstruct the grid
+        f_grid = f_sampled.reshape(M, 3)  # Shape (M, 3)
+
+        assert np.allclose(f_grid, X)
+
+        f_grid_3d = f_grid.reshape((N, N, N, 3))
+        assert np.allclose(f_grid_3d, jnp.stack([xx, yy, zz], axis=-1))
+
+    def test_reconstruction_from_convenience_function(self) -> None:
+        """
+        Test that noise sampled from a GP with multi-output covariance matrix
+        constructed from the convenience function can be transformed back to a grid
+        correctly.
+        """
+        # N = 2
+        # D = 3
+        # inner_cov = np.arange(D * D).reshape(D, D)
+        # full_cov = np.tile(inner_cov, (N, N, 1, 1))
+        #
+        # # [N, N, D, D] -> [D*N, D*N]
+        # K = kernels.tensor_to_matrix(jnp.array(full_cov, dtype=float))
+
+        N = 5
+        M = N**3
+        # base_vec = np.zeros(M)
+        # vec = np.stack([base_vec, base_vec + 1, base_vec + 2], axis=0).reshape(-1, 1)
+
+        # The multi-output covariance matrix is constructed by tiling the matrix-valued
+        # covariances for each input. This following simulates the vector
+        #   vec = [x_111, y_111, z_111, x_112, y_112, z_112, ..., x_nnn, y_nnn, z_nnn]
+        # which need to be reconstructed as
+        #   v[1,1,1] = [x_111, y_111, z_111],
+        #   v[1,1,2] = [x_112, y_112, z_112],
+        #   ...
+        #   v[1,1,n] = [x_11n, y_11n, z_11n],
+        #   v[1,2,1] = [x_121, y_121, z_121],
+        #   ...
+        #   v[n,n,n] = [x_nnn, y_nnn, z_nnn]
+        #
+        vec = np.concatenate([np.arange(3, dtype=int) + n for n in range(M)], axis=0)
+        assert vec.shape == (3 * M,)
+
+        # embed()
+        # v1 = vec.reshape(-1, 3)
+        # v1 = np.stack([vec[d * M : (d + 1) * M] for d in range(3)], axis=1).squeeze()
+        v1 = np.stack([vec[3 * m : 3 * (m + 1)] for m in range(M)], axis=0).squeeze()
+        assert v1.shape == (M, 3)
+
+        v2 = v1.reshape(N, N, N, 3)
+        # embed()
+        assert np.all(v2[0, 0, 0] == [0, 1, 2])
+        assert np.all(v2[0, 0, 1] == [1, 2, 3])
+        assert np.all(v2[0, 0, 2] == [2, 3, 4])
+
+        # v2[0, 1, 0]: one loop through the last axis.
+        assert np.all(v2[0, 1, 0] == np.arange(3) + N)
+
+        # v2[1, 0, 0]: one loop through the second axis, for which each index is a full
+        # loop through the last axis.
+        assert np.all(v2[1, 0, 0] == np.arange(3) + N * N)
+
+        # v2[1, 1, 0]: one loop through the fist axis plus one through the second.
+        assert np.all(v2[1, 1, 0] == np.arange(3) + N * N + N)
+
+        assert np.all(v2[3, 2, 1] == np.arange(3) + 3 * N**2 + 2 * N + 1)
+
+
+class TestCovarianceMatrix:
+    def test_cov_matrix_computation(self) -> None:
+        "Test that the covariance matrix is computed correctly, e.g., not transposed."
+
+        def k(x: Float[Array, "N D"], y: Float[Array, "M D"]) -> Float[Array, "N M"]:
+            return jnp.sum(x + y)
+
+        X = jnp.arange(5).reshape(-1, 1)
+        Y = jnp.arange(10, 20).reshape(-1, 1)
+
+        # vmap over each input to the covariance function in turn. We want each argument
+        # to keep their mutual order in the resulting matrix, hence the out_axes
+        # specifications:
+        cov = jax.vmap(
+            jax.vmap(k, in_axes=(0, None), out_axes=0),
+            in_axes=(None, 0),
+            out_axes=1,
+        )
+
+        K = cov(X, Y)
+
+        assert K.shape == (5, 10)
+        assert jnp.all(K[0] == jnp.arange(10, 20))
+        assert jnp.all(K[1] == jnp.arange(10, 20) + 1)
+
+    def test_multioutput_cov_matrix_transformation(self) -> None:
+        """
+        Test that the covariance matrix is computed correctly for the case of
+        matrix-valued kernels.
+        """
+
+        def k(x: Float[Array, "N D"], y: Float[Array, "M D"]) -> Float[Array, "N M"]:
+            return jnp.arange(9).reshape(3, 3) + jnp.sum(x + y)
+
+        X = jnp.arange(5).reshape(-1, 1)
+        Y = jnp.arange(10, 20).reshape(-1, 1)
+
+        # vmap over each input to the covariance function in turn. We want each argument
+        # to keep their mutual order in the resulting matrix, hence the out_axes
+        # specifications:
+        cov = jax.vmap(
+            jax.vmap(k, in_axes=(0, None), out_axes=0),
+            in_axes=(None, 0),
+            out_axes=1,
+        )
+        K = cov(X, Y)
+
+        assert K.shape == (5, 10, 3, 3)
+        assert jnp.all(K[0, 0] == jnp.arange(9).reshape(3, 3) + 0 + 10)
+        assert jnp.all(K[1, 0] == jnp.arange(9).reshape(3, 3) + 1 + 10)
+        assert jnp.all(K[2, 2] == jnp.arange(9).reshape(3, 3) + 2 + 12)
 
 
 class TestDiagDivFreeKernel:
@@ -214,15 +431,21 @@ class TestDiagDivFreeKernel:
 
         k = diag_div_free_kernel(self.lengthscale, 1.0)
 
+        Nx = 10
+        Ny = 10
+        Nz = 4
+        M = Nx * Ny * Nz
         # Set up toy dataset:
-        x_array = jnp.linspace(0, 1, 10)
-        y_array = jnp.linspace(0, 1, 10)
-        z_array = jnp.linspace(0, 1, 10)
+        x_array = jnp.linspace(0, 1, Nx)
+        y_array = jnp.linspace(0, 1, Ny)
+        z_array = jnp.linspace(0, 0.1 * Nz, Nz)
 
-        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array)
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
+        # yy, xx, zz = jnp.meshgrid(x_array, y_array, z_array)
 
         # Construct input coordinates for grid, shape [N, 3]:
         X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
+        assert X.shape == (M, 3)
 
         # vmap over each input to the covariance function in turn. We want each argument
         # to keep their mutual order in the resulting matrix, hence the out_axes
@@ -232,13 +455,37 @@ class TestDiagDivFreeKernel:
             in_axes=(None, 0),
             out_axes=1,
         )
-        K = kernels.tensor_to_matrix(cov(X, X))
-        assert K.shape == (3 * 1000, 3 * 1000)
+
+        C = cov(X, X)
+        assert C.shape == (M, M, 3, 3)
+
+        K = kernels.tensor_to_matrix(C)
+        assert K.shape == (3 * M, 3 * M)
+        assert jnp.all(K[:3, :3] == C[0, 0])
+        assert jnp.all(K[:3, 3:6] == C[0, 1])
+        assert jnp.all(K[3:6, 0:3] == C[1, 0])
+        assert jnp.all(K[3:6, 3:6] == C[1, 1])
+        assert jnp.all(K[3:6, :3] == K[:3, 3:6])
+        # for i in range(M):
+        #     for j in range(M):
+        #         assert jnp.all(
+        #             K[3 * i : 3 * (i + 1), 3 * j : 3 * (j + 1)]
+        #             == K[3 * j : 3 * (j + 1), 3 * i : 3 * (i + 1)]
+        #         )
+
+        #      [ [X,X], [X, Y], [X, Z]]
+        # K2 = [ [Y,X], [Y, Y], [Y, Z]]
+        #      [ [Z,X], [Z, Y], [Z, Z]]
+        # K2 = C.transpose(2, 0, 3, 1).reshape(3 * M, 3 * M)
+        # K = C.reshape(3 * M, 3 * M)
 
         isnan = True
         scaling = 1
         while isnan:
             L = jnp.linalg.cholesky(K + scaling * _default_jitter * jnp.eye(K.shape[0]))
+            # L = jnp.linalg.cholesky(
+            #     K2 + scaling * _default_jitter * jnp.eye(K.shape[0])
+            # )
             isnan = jnp.any(jnp.isnan(L))
             if isnan:
                 scaling *= 10
@@ -249,14 +496,21 @@ class TestDiagDivFreeKernel:
         # Sample noise:
         u = random.normal(key, shape=[K.shape[0], 1])
 
-        # Transform noise to GP prior sample:
+        # Transform noise to GP prior samples of the vector field:
         f = L @ u
 
-        assert f.shape == (3 * 1000, 1)
+        assert f.shape == (3 * M, 1)
 
-        f = f.reshape(-1, 3)
-        assert f.shape == (1000, 3)
-        f = f.reshape(x_array.shape[0], y_array.shape[0], z_array.shape[0], 3)
+        # # f = f.reshape(-1, 3)
+        # f2 = np.stack([f[3 * m : 3 * (m + 1)] for m in range(M)], axis=0).squeeze()
+        # # f2 = np.stack([f[M * d : M * (d + 1)] for d in range(3)], axis=1).squeeze()
+        # assert f2.shape == (M, 3)
+        # f3 = f2.reshape(x_array.shape[0], y_array.shape[0], z_array.shape[0], 3)
+
+        f_grid = f.squeeze().reshape(M, 3)
+        f_grid_3d = f_grid.reshape(Nx, Ny, Nz, 3)
+        f3 = f_grid_3d
+        # embed()
 
         # Function derivative:
         # dfdx, dfdy, dfdz = jnp.gradient(f_grid)
@@ -264,12 +518,49 @@ class TestDiagDivFreeKernel:
         dy = y_array[1] - y_array[0]
         dz = z_array[1] - z_array[0]
 
-        dfdx = jnp.gradient(f[..., 0], dx, axis=0)  # [N, N, N]
-        dfdy = jnp.gradient(f[..., 1], dy, axis=1)  # [N, N, N]
-        dfdz = jnp.gradient(f[..., 2], dz, axis=2)  # [N, N, N]
+        dfdx = np.gradient(f3[..., 0], dx, axis=0, edge_order=2)  # [N, N, N]
+        dfdy = np.gradient(f3[..., 1], dy, axis=1, edge_order=2)  # [N, N, N]
+        dfdz = np.gradient(f3[..., 2], dz, axis=2, edge_order=2)  # [N, N, N]
 
         # df_grid = jnp.dstack((dfdx, dfdy, dfdz)).reshape(-1, 3)
+        # div = dfdx + dfdy + dfdz
+        #
+        # import matplotlib.pyplot as plt
+        #
+        # num_rows = int(np.ceil(np.sqrt(Nz)))
+        # num_cols = int(np.ceil(np.sqrt(Nz)))
+        #
+        # fig, ax = plt.subplots(
+        #     num_rows,
+        #     num_cols,
+        #     figsize=(12, 8),
+        #     squeeze=False,
+        # )
+        # dx = 1 / Nx / 2
+        # dy = 1 / Ny / 2
+        #
+        # for i in range(num_rows):
+        #     for j in range(num_cols):
+        #         if i * num_cols + j >= Nz:
+        #             pass
+        #         else:
+        #             ax[i, j].imshow(
+        #                 div[..., i * num_cols + j],
+        #                 extent=[0 - dx, 1 + dx, 0 - dy, 1 + dy],
+        #                 origin="lower",
+        #             )
+        #             ax[i, j].quiver(
+        #                 xx[..., 0],
+        #                 yy[..., 0],
+        #                 f3[..., i * num_cols + j, 0],
+        #                 f3[..., i * num_cols + j, 1],
+        #                 angles="xy",
+        #             )
+        #             ax[i, j].set_title(f"z={i * num_cols + j}")
+        # plt.show()
+
         divergence = jnp.ravel(dfdx + dfdy + dfdz)
+        print(divergence.min(), divergence.mean())
 
         assert jnp.allclose(divergence, jnp.zeros_like(divergence))
 
