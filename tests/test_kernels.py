@@ -1179,6 +1179,75 @@ class TestDivFreeKernel:
         version from Wahlström et al. (2013).
         """
 
+        Nx = 8
+        Ny = 8
+        Nz = 8
+
+        # Set up toy dataset:
+        x_array = jnp.linspace(-1, 1, Nx)
+        y_array = jnp.linspace(-1, 1, Ny)
+        z_array = jnp.linspace(-1, 1, Nz)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
+
+        # Construct input coordinates for grid, shape [M, 2]:
+        grid = jnp.stack([xx, yy, zz], axis=-1)
+
+        # This field is divergence-free, so it should be modelled well by the kernels.
+        f, _ = field_and_divergence(grid, p=3, q=0)
+
+        X = grid.reshape(-1, 3)
+        f_flat = f.reshape(-1, 3)
+
+        # Split the data in random training and test sets.
+        key = random.PRNGKey(0)
+        shuffle_idx = jax.random.choice(key, len(X), shape=(len(X),), replace=False)
+        X_train, X_test = jax.numpy.split(X[shuffle_idx], [16])
+        f_train, _ = jax.numpy.split(f_flat[shuffle_idx], [16])
+
+        predictions = []
+        covariances = []
+        Ks = []
+
+        k_diag = diag_div_free_kernel(self.lengthscale, 1.0)
+        # k_df = kernels.div_free(self.k_eq)
+
+        # TODO: create diagonal divergence-free kernel.
+        def k_zero(x: Float[Array, "D"], y: Float[Array, "D"]) -> float:
+            return 0.0
+
+        base_kernels = [
+            [self.k_eq, k_zero, k_zero],
+            [k_zero, self.k_eq, k_zero],
+            [k_zero, k_zero, self.k_eq],
+        ]
+        k_df_diag = kernels.div_free(base_kernels)
+        # embed()
+
+        for k_df in [k_df_diag, k_diag]:
+            C = kernels.cov_matrix(k_df, X_train, X_train)
+            K = kernels.tensor_to_matrix(C)
+            Ks.append(K)
+
+            L = jax.scipy.linalg.cholesky(
+                K + _default_jitter * jnp.eye(K.shape[0]), lower=True
+            )
+            alpha = jax.scipy.linalg.cho_solve((L, True), f_train.reshape(-1, 1))
+
+            C_pred = kernels.cov_matrix(k_df, X_train, X_test)
+            K_pred = kernels.tensor_to_matrix(C_pred)
+            f_pred = K_pred.T @ alpha
+            v = jax.scipy.linalg.solve_triangular(L, K_pred, lower=True)
+            C_pp = kernels.cov_matrix(k_df, X_test, X_test)
+            K_pp = kernels.tensor_to_matrix(C_pp)
+            covar = K_pp - v.T @ v
+
+            predictions.append(f_pred)
+            covariances.append(covar)
+
+        assert jnp.allclose(predictions[0], predictions[1])
+        assert jnp.allclose(covariances[0], covariances[1])
+
     def test_for_eq_base_kernel(self) -> None:
         # For the EQ kernel, the output can be computed using the derivative defined
         # above.

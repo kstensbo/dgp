@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import jax
@@ -8,10 +8,16 @@ from jaxtyping import Array, Float, Scalar
 
 def cov_matrix(
     kernel: Callable, x: Float[Array, "N D"], y: Float[Array, "M D"]
-) -> Float[Array, "N M"]:
+) -> Float[Array, "N M"] | Float[Array, "N M P P"]:
     "Compute a dense covariance matrix from a kernel function and arrays of inputs."
 
-    K = jax.vmap(lambda xi: jax.vmap(lambda yi: kernel(xi, yi))(y))(x)
+    # K = jax.vmap(lambda xi: jax.vmap(lambda yi: kernel(xi, yi))(y))(x)
+    # FIXME: Should the input be (y, x) instead of (x, y)?
+    K = jax.vmap(
+        jax.vmap(kernel, in_axes=(0, None), out_axes=0),
+        in_axes=(None, 0),
+        out_axes=1,
+    )(x, y)
 
     return K
 
@@ -53,7 +59,7 @@ def levi_civita(i: int, j: int, k: int) -> int:
     return symbol
 
 
-def div_free(base_kernel: Callable) -> Callable:
+def div_free(base_kernel: Callable | Sequence[Sequence[Callable]]) -> Callable:
     """
     Defines a divergence-free kernel. Assumes the same base kernel for all elements in
     the matrix-valued kernel.
@@ -69,8 +75,31 @@ def div_free(base_kernel: Callable) -> Callable:
         (2, 1, 3),
     ]
 
-    # This derivative function outputs a [D, D] matrix for a pair of inputs:
-    d2kdxdy = jax.jacfwd(jax.jacrev(base_kernel, argnums=0), argnums=1)
+    if callable(base_kernel):
+        # This derivative function outputs a [D, D] matrix for a pair of inputs:
+        # for i in range(3):
+        #     row = []
+        #     for j in range(3):
+        #         row.append(jax.jacfwd(jax.jacrev(base_kernel, argnums=0), argnums=1))
+        #
+        #     d2kdxdy.append(row)
+
+        d2kdxdy = [
+            [
+                jax.jacfwd(jax.jacrev(base_kernel, argnums=0), argnums=1)
+                for _ in range(3)
+            ]
+            for _ in range(3)
+        ]
+
+    else:
+        d2kdxdy = [
+            [
+                jax.jacfwd(jax.jacrev(base_kernel[i][j], argnums=0), argnums=1)
+                for j in range(3)
+            ]
+            for i in range(3)
+        ]
 
     # vmap over each input to the covariance function in turn. We want each argument to
     # keep their mutual order in the resulting matrix, hence the out_axes
@@ -82,11 +111,13 @@ def div_free(base_kernel: Callable) -> Callable:
     # )
 
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
-        K = jnp.zeros(3, dtype=float)
+        K = jnp.zeros([3, 3], dtype=float)
         for i, k, l in nonzero_levi_civita_symbols:  # noqa: E741
             for j, m, n in nonzero_levi_civita_symbols:
-                K += (
-                    levi_civita(i, k, l) * levi_civita(j, m, n) * d2kdxdy(x, y)
+                K = K.at[i - 1, j - 1].add(
+                    levi_civita(i, k, l)
+                    * levi_civita(j, m, n)
+                    * d2kdxdy[l - 1][n - 1](x, y)[k - 1, m - 1]
                 )  # [l, n]
 
         return K
