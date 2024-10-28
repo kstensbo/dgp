@@ -24,9 +24,16 @@ def eq_deriv(
     dirac = 1.0 if i == j else 0.0
 
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Scalar:
-        factor = (dirac - ((x[i] - y[i]) * (x[j] - y[j])) / (lengthscale**2)) / (
-            lengthscale**2
-        )
+        # factor = (dirac - ((x[i] - y[i]) * (x[j] - y[j])) / (lengthscale**2)) / (
+        #     lengthscale**2
+        # )
+        # factor = dirac / lengthscale[i] ** 2 - ((x[i] - y[i]) * (x[j] - y[j])) / (
+        #     lengthscale[i] ** 2 * lengthscale[j] ** 2
+        # )
+        #
+        scaled_diff = (x - y) / lengthscale**2
+        factor = dirac / lengthscale[i] ** 2 - (scaled_diff[i] * scaled_diff[j])
+
         return factor * variance * jnp.exp(-0.5 * jnp.sum(((x - y) / lengthscale) ** 2))
 
     return k
@@ -1269,7 +1276,7 @@ class TestDivFreeKernel:
         for i, k, l in nonzero_levi_civita_symbols:  # noqa: E741
             for j, m, n in nonzero_levi_civita_symbols:
                 dk = eq_deriv(self.lengthscale, 1.0, k, m)
-                expected_output += (
+                expected_output = expected_output.at[i - 1, j - 1].add(
                     kernels.levi_civita(i, k, l)
                     * kernels.levi_civita(j, m, n)
                     * dk(self.x, self.y)
