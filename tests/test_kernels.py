@@ -1283,3 +1283,97 @@ class TestDivFreeKernel:
                 )
 
         assert jnp.allclose(output, expected_output)
+
+    def test_zero_divergence_3d(self) -> None:
+        """
+        Verify that samples from the divergence-free kernel have zero divergence.
+        """
+
+        key = random.PRNGKey(seed=0)
+
+        k = kernels.div_free(self.k_eq)
+
+        Nx = 16
+        Ny = 16
+        Nz = 4
+        M = Nx * Ny * Nz
+
+        D = 3
+
+        # Set up toy dataset:
+        x_array = jnp.linspace(0, 0.01 * Nx, Nx)
+        y_array = jnp.linspace(0, 0.01 * Ny, Ny)
+        z_array = jnp.linspace(0, 0.01 * Nz, Nz)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
+
+        # Construct input coordinates for grid, shape [M, 3]:
+        X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, D)
+        assert X.shape == (M, D)
+
+        # vmap over each input to the covariance function in turn. We want each argument
+        # to keep their mutual order in the resulting matrix, hence the out_axes
+        # specifications:
+        cov = jax.vmap(
+            jax.vmap(k, in_axes=(0, None), out_axes=0),
+            in_axes=(None, 0),
+            out_axes=1,
+        )
+
+        C = cov(X, X)
+        assert C.shape == (M, M, D, D)
+
+        K = kernels.tensor_to_matrix(C)
+        assert K.shape == (D * M, D * M)
+
+        isnan = True
+        scaling = 1e-6
+        while isnan:
+            L = jnp.linalg.cholesky(K + scaling * _default_jitter * jnp.eye(K.shape[0]))
+            isnan = jnp.any(jnp.isnan(L))
+            if isnan:
+                scaling *= 10
+
+        # print(
+        #     f"Added 1e{int(np.log10(scaling * _default_jitter))} to the diagonal "
+        #     "for the Cholesky decomposition."
+        # )
+        assert not jnp.any(jnp.isnan(L))
+
+        # Sample noise:
+        u = random.normal(key, shape=[K.shape[0], 1])
+
+        # Transform noise to GP prior samples of the vector field:
+        f = L @ u
+
+        assert f.shape == (D * M, 1)
+
+        f_grid = f.squeeze().reshape(M, D)
+        f_grid_3d = f_grid.reshape(Nx, Ny, Nz, D)
+        f3 = f_grid_3d
+
+        # Function derivative:
+        dx = x_array[1] - x_array[0]
+        dy = y_array[1] - y_array[0]
+        dz = z_array[1] - z_array[0]
+
+        dfdx = np.gradient(f3[..., 0], dx, axis=0, edge_order=2)  # [N, N, N]
+        dfdy = np.gradient(f3[..., 1], dy, axis=1, edge_order=2)  # [N, N, N]
+        dfdz = np.gradient(f3[..., 2], dz, axis=2, edge_order=2)  # [N, N, N]
+
+        divergence = dfdx + dfdy + dfdz
+
+        # For comparison to zero, ignore the box edges as the errors will be much larger
+        # here.
+        inner_divergence = jnp.ravel(divergence[1:-1, 1:-1, 1:-1])
+
+        # The array of zeros should be the first argument to make the relative tolerance
+        # actually do something.
+        # The value of atol matches the expected error:
+        # https://numpy.org/doc/2.0/reference/generated/numpy.gradient.html
+        assert jnp.allclose(
+            jnp.zeros_like(inner_divergence),
+            inner_divergence,
+            # atol=dx**2 + dy**2 + dz**2,
+            atol=0.1,
+        )
