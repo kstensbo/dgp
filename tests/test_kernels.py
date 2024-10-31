@@ -86,6 +86,31 @@ def field_and_divergence(
     return f, div
 
 
+def compute_curl_from_potential(
+    grid: Float[Array, "Nx Ny"] | Float[Array, "Nx Ny Nz"], stepsizes: Float[Array, "D"]
+) -> Float[Array, "Nx Ny"] | Float[Array, "Nx Ny Nz"]:
+    df = jnp.gradient(grid, *stepsizes)
+
+    dfydx = jnp.gradient(df[1], stepsizes[1], axis=0)
+    dfxdy = jnp.gradient(df[0], stepsizes[0], axis=1)
+
+    curl_z = dfydx - dfxdy
+    curl = curl_z
+
+    if len(grid.shape) == 3:  # noqa: PLR2004
+        dfxdz = jnp.gradient(df[0], stepsizes[0], axis=2)
+        dfydz = jnp.gradient(df[1], stepsizes[1], axis=2)
+
+        dfzdx = jnp.gradient(df[2], stepsizes[2], axis=0)
+        dfzdy = jnp.gradient(df[2], stepsizes[2], axis=1)
+
+        curl_x = dfzdy - dfydz
+        curl_y = -(dfzdx - dfxdz)
+        curl = jnp.stack((curl_x, curl_y, curl_z), axis=-1)
+
+    return curl
+
+
 class TestEQDerivative:
     x = jnp.ones(3, dtype=float)
     y = jnp.zeros(3, dtype=float)
@@ -371,6 +396,49 @@ class TestCovarianceMatrix:
         assert jnp.all(K[0, 0] == jnp.arange(9).reshape(3, 3) + 0 + 10)
         assert jnp.all(K[1, 0] == jnp.arange(9).reshape(3, 3) + 1 + 10)
         assert jnp.all(K[2, 2] == jnp.arange(9).reshape(3, 3) + 2 + 12)
+
+
+class TestCurlFreeKernel:
+    def test_zero_curl(self) -> None:
+        """
+        Test that a potential sampled from the EQ covariance function lead to curl-free
+        field.
+        """
+
+        # Construct 3D grid:
+        Nx = 8
+        Ny = 8
+        Nz = 8
+        N = Nx * Ny * Nz
+
+        stepsizes = jnp.array([0.1, 0.1, 0.1])
+
+        x_array = jnp.linspace(0, Nx * stepsizes[0], Nx)
+        y_array = jnp.linspace(0, Ny * stepsizes[1], Ny)
+        z_array = jnp.linspace(0, Nz * stepsizes[2], Nz)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
+
+        # Construct input coordinates for grid, shape [N, 3]:
+        X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
+
+        k = kernels.eq(lengthscale=jnp.ones(3, dtype=float), variance=1.0)
+
+        K = kernels.cov_matrix(k, X, X)
+        L = jnp.linalg.cholesky(K + _default_jitter * jnp.eye(N))
+
+        # Sample noise:
+        key = random.PRNGKey(seed=0)
+        u = random.normal(key, shape=[N, 1])
+
+        # Transform noise to GP prior sample:
+        f = L @ u
+        f_grid = f.reshape(Nx, Ny, Nz)
+
+        # Potentials sampled from the curl-free kernel should be curl-free:
+        curl = compute_curl_from_potential(f_grid, stepsizes)
+
+        assert jnp.allclose(jnp.zeros_like(curl), curl)
 
 
 class TestDiagDivFreeKernel:
@@ -1283,3 +1351,156 @@ class TestDivFreeKernel:
                 )
 
         assert jnp.allclose(output, expected_output)
+
+
+class TestCurlAndDivFreeKernel:
+    def test_zero_curl(self) -> None:
+        """
+        Test that a potential sampled from the curl- and divergence-free covariance
+        function lead to a curl-free field.
+        """
+
+        # Construct 3D grid:
+        Nx = 8
+        Ny = 8
+        Nz = 8
+        N = Nx * Ny * Nz
+
+        stepsizes = jnp.array([0.1, 0.1, 0.1])
+
+        x_array = jnp.linspace(0, Nx * stepsizes[0], Nx)
+        y_array = jnp.linspace(0, Ny * stepsizes[1], Ny)
+        z_array = jnp.linspace(0, Nz * stepsizes[2], Nz)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
+
+        # Construct input coordinates for grid, shape [N, 3]:
+        X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
+
+        # # First sample a potential and compute a field.
+        # k_eq = kernels.eq(lengthscale=jnp.ones(3), variance=1.0)
+        #
+        # K = kernels.cov_matrix(k_eq, X, X)
+        # L = jnp.linalg.cholesky(K + _default_jitter * jnp.eye(N))
+        #
+        # # Sample noise:
+        # key = random.PRNGKey(seed=0)
+        # key, subkey = random.split(key)
+        # u = random.normal(subkey, shape=[N, 1])
+        #
+        # # Transform noise to GP prior sample:
+        # f = L @ u
+        # f_grid = f.reshape(Nx, Ny, Nz)
+        #
+        # # Compute field:
+        # field = jnp.gradient(f_grid, *stepsizes)
+        #
+        # # Choose a small, random subset of the field vectors:
+        # key, subkey = random.split(key)
+        # ids = random.choice(subkey, N, shape=(8,))
+        #
+        # X_train = X[ids]
+        # field_train = field.reshape(-1, 3)[ids]
+        #
+        # Model the field using the curl- and divergence-free kernel:
+
+        base_kernel = kernels.eq(lengthscale=jnp.ones(3, dtype=float), variance=1.0)
+        k = kernels.cdf_kernel(base_kernel=base_kernel, i=0, j=0)
+
+        # K = kernels.cov_matrix(k, X_train, X_train)
+        K = kernels.cov_matrix(k, X, X)
+
+        assert K.shape == (N, N)
+
+        L = jnp.linalg.cholesky(K + _default_jitter * jnp.eye(N))
+
+        # Sample noise:
+        key = random.PRNGKey(seed=0)
+        key, subkey = random.split(key)
+        u = random.normal(subkey, shape=[N, 1])
+
+        # Transform noise to GP prior sample:
+        f = L @ u
+        f_grid = f.reshape(Nx, Ny, Nz)
+
+        # Potentials sampled from the curl-free kernel should be curl-free:
+        curl = compute_curl_from_potential(f_grid, stepsizes)
+
+        assert jnp.allclose(jnp.zeros_like(curl), curl)
+
+    def test_zero_divergence(self) -> None:
+        """
+        Test that a potential sampled from the curl- and divergence-free covariance
+        function lead to a divergence-free field.
+        """
+        # Construct 3D grid:
+        Nx = 8
+        Ny = 8
+        Nz = 8
+        N = Nx * Ny * Nz
+
+        # Take small step sizes to avoid large numerical errors in the divergence:
+        stepsizes = np.array(
+            [
+                0.1,
+                0.1,
+                0.1,
+            ]
+        )
+
+        x_array = jnp.linspace(0, Nx * stepsizes[0], Nx)
+        y_array = jnp.linspace(0, Ny * stepsizes[1], Ny)
+        z_array = jnp.linspace(0, Nz * stepsizes[2], Nz)
+
+        xx, yy, zz = jnp.meshgrid(x_array, y_array, z_array, indexing="ij")
+
+        # Construct input coordinates for grid, shape [N, 3]:
+        X = jnp.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
+
+        k_eq = kernels.eq(lengthscale=jnp.ones(3, dtype=float), variance=1.0)
+        base_kernel = [[k_eq] * 3] * 3
+
+        k = jax.jit(kernels.cdf_kernel(base_kernel=base_kernel, i=0, j=0))
+
+        # import time
+        # s = time.time()
+        # k = jax.jit(kernels.cdf_kernel(base_kernel=k_eq, i=0, j=0)) # Fast
+        # k = jax.jit(kernels.cdf_kernel(base_kernel=base_kernel, i=0, j=0)) # Slow
+        # print()
+        # print(f"Setting up the kernel: {time.time() - s:.3g} s")
+        #
+        # s = time.time()
+        # K = kernels.cov_matrix(k, X, X)
+        # print(f"Computing covariance matrix: {time.time() - s:.3g} s")
+
+        K = kernels.cov_matrix(k, X, X)
+        assert K.shape == (N, N)
+
+        jitter = 1e-12
+        L = jnp.linalg.cholesky(K + jitter * jnp.eye(N))
+
+        # Sample noise:
+        key = random.PRNGKey(seed=0)
+        key, subkey = random.split(key)
+        u = random.normal(subkey, shape=[N, 1])
+
+        # Transform noise to GP prior sample:
+        f = L @ u
+        f_grid = f.reshape(Nx, Ny, Nz)
+
+        field = np.gradient(f_grid, *stepsizes)
+
+        dfdx = np.gradient(field[0], stepsizes[0], axis=0)  # [N, N]
+        dfdy = np.gradient(field[1], stepsizes[1], axis=1)  # [N, N]
+        dfdz = np.gradient(field[2], stepsizes[2], axis=2)  # [N, N]
+
+        # df = np.gradient(np.stack(field, axis=-1), *stepsizes, axis=-1)
+
+        empirical_div = dfdx + dfdy + dfdz
+
+        # The edges are poorly estimated, and this propagates when taking the second
+        # gradient, hence we cut the edges twice:
+        inner_div = empirical_div[1:-1, 1:-1, 1:-1]
+        inner_div = inner_div[1:-1, 1:-1, 1:-1]
+
+        assert jnp.allclose(jnp.zeros_like(inner_div), inner_div, atol=0.1)
