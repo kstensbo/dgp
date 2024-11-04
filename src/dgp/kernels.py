@@ -74,10 +74,48 @@ nonzero_levi_civita_symbols = [
 ]
 
 
+# def div_free(base_kernel: Callable | Sequence[Sequence[Callable]]) -> Callable:
+#     """
+#     Defines a divergence-free kernel. Assumes the same base kernel for all elements in
+#     the matrix-valued kernel.
+#     """
+#
+#     if callable(base_kernel):
+#         d2kdxdy = [
+#             [
+#                 jax.jacfwd(jax.jacrev(base_kernel, argnums=0), argnums=1)
+#                 for _ in range(3)
+#             ]
+#             for _ in range(3)
+#         ]
+#
+#     else:
+#         d2kdxdy = [
+#             [
+#                 jax.jacfwd(jax.jacrev(base_kernel[i][j], argnums=0), argnums=1)
+#                 for j in range(3)
+#             ]
+#             for i in range(3)
+#         ]
+#
+#     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
+#         K = jnp.zeros([3, 3], dtype=float)
+#         for i, k, l in nonzero_levi_civita_symbols:
+#             for j, m, n in nonzero_levi_civita_symbols:
+#                 K = K.at[i - 1, j - 1].add(
+#                     levi_civita(i, k, l)
+#                     * levi_civita(j, m, n)
+#                     * d2kdxdy[l - 1][n - 1](x, y)[k - 1, m - 1]
+#                 )  # [l, n]
+#
+#         return K
+#
+#     return k
+
+
 def div_free(base_kernel: Callable | Sequence[Sequence[Callable]]) -> Callable:
     """
-    Defines a divergence-free kernel. Assumes the same base kernel for all elements in
-    the matrix-valued kernel.
+    Defines a divergence-free (multi-output) covariance function for a vector field.
     """
 
     if callable(base_kernel):
@@ -99,9 +137,13 @@ def div_free(base_kernel: Callable | Sequence[Sequence[Callable]]) -> Callable:
         ]
 
     def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> Float[Array, "D D"]:
-        K = jnp.zeros([3, 3], dtype=float)
+        D = x.shape[0]
+        K = jnp.zeros([D, D], dtype=float)
         for i, k, l in nonzero_levi_civita_symbols:  # noqa: E741
             for j, m, n in nonzero_levi_civita_symbols:
+                if i > D or j > D or k > D or m > D:
+                    continue
+
                 K = K.at[i - 1, j - 1].add(
                     levi_civita(i, k, l)
                     * levi_civita(j, m, n)
@@ -186,9 +228,12 @@ def cdf_kernel(
         def k(x: Float[Array, "D"], y: Float[Array, "D"]) -> float | Scalar:
             "A covariance function for curl- and divergence-free potentials."
             full_sum = 0.0
+            # D = x.shape[0]
 
             for e1, _, k, l in nonzero_levi_citiva_symbols_matching_i:  # noqa: E741
                 for e2, _, m, n in nonzero_levi_citiva_symbols_matching_j:
+                    # if k > D or m > D:
+                    #     continue
                     # Retrieve the (l, n)th covariance function, and evaluate all
                     # partial derivatives:
                     cov = d6k[l - 1][n - 1](x, y)
