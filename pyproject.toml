@@ -70,6 +70,7 @@ ignore = [
   "E111",
   "E114",
   "E117",
+  "ISC001",
 
   # jaxtyping-specific problems, see https://docs.kidger.site/jaxtyping/faq/#flake8-or-ruff-are-throwing-an-error
   "F722", # syntax error in forward annotation

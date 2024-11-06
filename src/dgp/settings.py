@@ -1,1 +1,1 @@
-_default_jitter = 1e-6
+_default_jitter = 1e-12
