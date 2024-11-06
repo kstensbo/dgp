@@ -2,3 +2,4 @@ jax[cpu]>=0.4
 jaxtyping>=0.2.28
 jaxlib
 optax>=0.1.9
+prettytable>=3.12
