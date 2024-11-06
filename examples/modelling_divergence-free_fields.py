@@ -16,8 +16,6 @@ from matplotlib.colors import CenteredNorm
 from dgp import kernels
 from dgp.settings import _default_jitter
 
-from IPython import embed  # noqa
-
 jax.config.update("jax_enable_x64", True)
 
 
@@ -319,7 +317,6 @@ if __name__ == "__main__":
 
     divergence = dfdx + dfdy
 
-    # _, ax = plt.subplots(1, 2, figsize=(10, 4), layout="constrained")
     _, ax = plt.subplot_mosaic(
         """
         AAABB
