@@ -1,4 +1,6 @@
 import argparse
+import json
+import pathlib
 from collections.abc import Callable
 from typing import NamedTuple, TypedDict
 
@@ -235,21 +237,35 @@ if __name__ == "__main__":
         "--optimiser", type=str, default="adam", help="Name of Optax optimiser."
     )
     parser.add_argument("--lr", type=float, default=1e-1, help="Learning rate.")
+    parser.add_argument("--data", choices=["random", "synthetic"], default="synthetic")
 
     args = parser.parse_args()
 
     key = random.PRNGKey(args.seed)
 
-    true_params = {
-        "log_lengthscale": jnp.log(jnp.ones(2) * 0.5),
-        "log_variance": jnp.log(2.0),
-        "log_likelihood_variance": jnp.log(0.1),
-    }
-    training_set = sample_dataset(
-        key=key,
-        params=true_params,
-        num_samples=args.num_samples,
-    )
+    if args.data == "random":
+        true_params = {
+            "log_lengthscale": jnp.log(jnp.ones(2) * 0.5),
+            "log_variance": jnp.log(2.0),
+            "log_likelihood_variance": jnp.log(0.1),
+        }
+        training_set = sample_dataset(
+            key=key,
+            params=true_params,
+            num_samples=args.num_samples,
+        )
+
+    elif args.data == "synthetic":
+        with pathlib.Path("data/training_set.json").open("r") as f:
+            training_data = json.load(f)
+
+        training_set = Dataset(
+            X=jnp.array(training_data["X"]), Y=jnp.array(training_data["Y"])
+        )
+
+    else:
+        msg = f"Value of data parameter unknown: '{args.data}'."
+        raise ValueError(msg)
 
     optimiser = get_optimiser(args.optimiser, lr=args.lr)
 
@@ -281,28 +297,31 @@ if __name__ == "__main__":
 
     # Pretty print results of optimisation:
     results_table = prettytable.PrettyTable()
-    results_table.add_column("Parameter", ["True", "Found"])
-    results_table.add_column(
+    results_table.field_names = [
+        "Parameter",
         "Length scales",
-        [
-            jnp.exp(true_params["log_lengthscale"]),
-            jnp.exp(params["log_lengthscale"]),
-        ],
-    )
-    results_table.add_column(
         "Variance",
-        [
-            float(jnp.exp(true_params["log_variance"])),
-            float(jnp.exp(params["log_variance"])),
-        ],
-    )
-    results_table.add_column(
         "Likelihood variance",
+    ]
+    if args.data == "random":
+        results_table.add_row(
+            [
+                "True",
+                jnp.exp(true_params["log_lengthscale"]),
+                float(jnp.exp(true_params["log_variance"])),
+                float(jnp.exp(true_params["log_likelihood_variance"])),
+            ]
+        )
+
+    results_table.add_row(
         [
-            float(jnp.exp(true_params["log_likelihood_variance"])),
+            "Found",
+            jnp.exp(params["log_lengthscale"]),
+            float(jnp.exp(params["log_variance"])),
             float(jnp.exp(params["log_likelihood_variance"])),
-        ],
+        ]
     )
+
     results_table.float_format = "5.3"
 
     print(results_table)
@@ -343,7 +362,6 @@ if __name__ == "__main__":
         angles="xy",
         color="C1",
         label="Predictions",
-        alpha=0.7,
         zorder=5,
     )
 
@@ -382,3 +400,4 @@ if __name__ == "__main__":
     ax["C"].set_xlabel("Epoch")
 
     plt.show()
+    # plt.savefig("divergence_free_field.png", dpi=300)
