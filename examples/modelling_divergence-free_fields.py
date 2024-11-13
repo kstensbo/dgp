@@ -1,4 +1,6 @@
 import argparse
+import json
+import pathlib
 from collections.abc import Callable
 from typing import NamedTuple, TypedDict
 
@@ -40,7 +42,10 @@ class GPPredictions(NamedTuple):
 
 class Logger(TypedDict):
     epochs: list[int]
-    values: list[float]
+    logp: list[float]
+    lengthscales: list[Array]
+    variance: list[float]
+    likelihood_variance: list[float]
 
 
 def sample_dataset(
@@ -145,7 +150,9 @@ def fit_gp(
         params = optax.apply_updates(params, update)
         return params, opt_state, -neg_logp
 
-    logger = Logger(epochs=[], values=[])
+    logger = Logger(
+        epochs=[], logp=[], lengthscales=[], variance=[], likelihood_variance=[]
+    )
     pbar = tqdm.tqdm(range(num_epochs), desc="Epoch")
 
     opt_state = optimiser.init(params)
@@ -154,7 +161,12 @@ def fit_gp(
             params, opt_state, logp = step_fn(params, opt_state, training_set)
 
             logger["epochs"].append(epoch)
-            logger["values"].append(logp)
+            logger["logp"].append(logp)
+            logger["lengthscales"].append(jnp.exp(params["log_lengthscale"]))
+            logger["variance"].append(float(jnp.exp(params["log_variance"])))
+            logger["likelihood_variance"].append(
+                float(jnp.exp(params["log_likelihood_variance"]))
+            )
 
             pbar.set_description(f"Epoch {epoch:d}: log(p) = {logp:.4g}")
 
@@ -192,7 +204,7 @@ def fit_and_predict(
     X_test: Array,
     optimiser: optax.GradientTransformation,
     num_epochs: int,
-) -> tuple[PyTree, GPPredictions, Logger]:
+) -> tuple[PyTree, GP, GPPredictions, Logger]:
     "Fit a GP to training_set and compute predictions at X_test."
 
     params, logger = fit_gp(
@@ -207,7 +219,7 @@ def fit_and_predict(
 
     predictions = predict(gp, X_test)
 
-    return params, predictions, logger
+    return params, gp, predictions, logger
 
 
 def get_optimiser(name: str, lr: float) -> optax.GradientTransformation:
@@ -220,6 +232,31 @@ def get_optimiser(name: str, lr: float) -> optax.GradientTransformation:
 
     else:
         return optimiser(learning_rate=lr)
+
+
+def sample_from_gp(key: ArrayLike, gp: GP, X: Array, num_samples: int) -> list[Dataset]:
+    "Sample from a GP posterior at locations X."
+
+    # Covariance tensors:
+    Cxs = kernels.cov_matrix(gp.k, gp.data.X, X)  # [N, M, D, D]
+    Cxx = kernels.cov_matrix(gp.k, X, X)  # [M, M, D, D]
+
+    # Covariance matrices:
+    Kxs = kernels.tensor_to_matrix(Cxs)  # [D*N, D*M]
+    Kxx = kernels.tensor_to_matrix(Cxx)  # [D*M, D*M]
+
+    f_pred = Kxs.T @ gp.alpha
+    v = jax.scipy.linalg.solve_triangular(gp.L, Kxs, lower=True)
+    covar = Kxx - v.T @ v
+    L = jnp.linalg.cholesky(covar + _default_jitter * jnp.eye(covar.shape[0]))
+
+    U = random.normal(key, shape=(num_samples, L.shape[0], 1))
+    samples = jax.vmap(lambda u: f_pred + L @ u)(U)
+
+    M = X.shape[0]
+    D = gp.data.Y.shape[1]
+
+    return [Dataset(X=X, Y=sample.reshape(M, D)) for sample in samples]
 
 
 if __name__ == "__main__":
@@ -235,21 +272,35 @@ if __name__ == "__main__":
         "--optimiser", type=str, default="adam", help="Name of Optax optimiser."
     )
     parser.add_argument("--lr", type=float, default=1e-1, help="Learning rate.")
+    parser.add_argument("--data", choices=["random", "synthetic"], default="synthetic")
 
     args = parser.parse_args()
 
     key = random.PRNGKey(args.seed)
 
-    true_params = {
-        "log_lengthscale": jnp.log(jnp.ones(2) * 0.5),
-        "log_variance": jnp.log(2.0),
-        "log_likelihood_variance": jnp.log(0.1),
-    }
-    training_set = sample_dataset(
-        key=key,
-        params=true_params,
-        num_samples=args.num_samples,
-    )
+    if args.data == "random":
+        true_params = {
+            "log_lengthscale": jnp.log(jnp.ones(2) * 0.5),
+            "log_variance": jnp.log(2.0),
+            "log_likelihood_variance": jnp.log(0.1),
+        }
+        training_set = sample_dataset(
+            key=key,
+            params=true_params,
+            num_samples=args.num_samples,
+        )
+
+    elif args.data == "synthetic":
+        with pathlib.Path("data/training_set.json").open("r") as f:
+            training_data = json.load(f)
+
+        training_set = Dataset(
+            X=jnp.array(training_data["X"]), Y=jnp.array(training_data["Y"])
+        )
+
+    else:
+        msg = f"Value of data parameter unknown: '{args.data}'."
+        raise ValueError(msg)
 
     optimiser = get_optimiser(args.optimiser, lr=args.lr)
 
@@ -271,7 +322,7 @@ if __name__ == "__main__":
     xx, yy = jnp.meshgrid(x_array, y_array, indexing="ij")
     X_test = jnp.stack([xx, yy], axis=-1).reshape(-1, 2)
 
-    params, predictions, logger = fit_and_predict(
+    params, gp, predictions, logger = fit_and_predict(
         params=initial_params,
         training_set=training_set,
         X_test=X_test,
@@ -281,31 +332,38 @@ if __name__ == "__main__":
 
     # Pretty print results of optimisation:
     results_table = prettytable.PrettyTable()
-    results_table.add_column("Parameter", ["True", "Found"])
-    results_table.add_column(
+    results_table.field_names = [
+        "Parameter",
         "Length scales",
-        [
-            jnp.exp(true_params["log_lengthscale"]),
-            jnp.exp(params["log_lengthscale"]),
-        ],
-    )
-    results_table.add_column(
         "Variance",
-        [
-            float(jnp.exp(true_params["log_variance"])),
-            float(jnp.exp(params["log_variance"])),
-        ],
-    )
-    results_table.add_column(
         "Likelihood variance",
+    ]
+    if args.data == "random":
+        results_table.add_row(
+            [
+                "True",
+                jnp.exp(true_params["log_lengthscale"]),
+                float(jnp.exp(true_params["log_variance"])),
+                float(jnp.exp(true_params["log_likelihood_variance"])),
+            ]
+        )
+
+    results_table.add_row(
         [
-            float(jnp.exp(true_params["log_likelihood_variance"])),
+            "Found",
+            jnp.exp(params["log_lengthscale"]),
+            float(jnp.exp(params["log_variance"])),
             float(jnp.exp(params["log_likelihood_variance"])),
-        ],
+        ]
     )
+
     results_table.float_format = "5.3"
 
     print(results_table)
+
+    # Sample from the posterior GP:
+    key, subkey = random.split(key)
+    samples = sample_from_gp(key=subkey, gp=gp, X=X_test, num_samples=8)
 
     # Compute divergence:
     dx = x_array[1] - x_array[0]
@@ -319,11 +377,15 @@ if __name__ == "__main__":
 
     _, ax = plt.subplot_mosaic(
         """
-        AAABB
-        AAABB
-        AAACC
+        AAAABBB
+        AAAABBB
+        AAAABBB
+        AAAACCC
+        AAAADDD
+        GHIJEEE
+        KLMNFFF
         """,
-        figsize=(10, 5),
+        figsize=(15, 12),
         layout="constrained",
     )
 
@@ -343,7 +405,6 @@ if __name__ == "__main__":
         angles="xy",
         color="C1",
         label="Predictions",
-        alpha=0.7,
         zorder=5,
     )
 
@@ -368,17 +429,55 @@ if __name__ == "__main__":
 
     ax["C"].plot(
         logger["epochs"],
-        logger["values"],
+        logger["logp"],
         ls="-",
         label="Log marginal likelihood",
     )
+
+    for i, ls in enumerate(jnp.array(logger["lengthscales"]).T):
+        ax["D"].plot(
+            logger["epochs"],
+            ls,
+            ls="-",
+            label=f"Length scale {i+1}",
+        )
+
+    ax["E"].plot(
+        logger["epochs"],
+        logger["variance"],
+        ls="-",
+        label="Variance",
+    )
+
+    ax["F"].plot(
+        logger["epochs"],
+        logger["likelihood_variance"],
+        ls="-",
+        label="Likelihood variance",
+    )
+
+    for axis, sample in zip("GHIJKLMN", samples, strict=False):
+        ax[axis].quiver(
+            *sample.X.T,
+            *sample.Y.T,
+            angles="xy",
+            color="C1",
+            label="Sample",
+        )
 
     ax["A"].set_title("Field")
     ax["A"].legend()
 
     ax["B"].set_title("Divergence")
 
-    ax["C"].set_title("Log marginal likelihood")
-    ax["C"].set_xlabel("Epoch")
+    # ax["C"].set_title("Log marginal likelihood")
 
-    plt.show()
+    ax["C"].legend()
+    ax["D"].legend()
+    ax["E"].legend()
+    ax["F"].legend()
+
+    ax["F"].set_xlabel("Epoch")
+
+    # plt.show()
+    plt.savefig("divergence_free_field.png", dpi=300)
